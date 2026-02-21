@@ -1,0 +1,16 @@
+[submodule "examples/clock-divider"]
+	path = examples/clock-divider
+	url = https://github.com/thesquaregroot/uncertainty-clock-divider
+[submodule "examples/uncertainty"]
+	path = examples/uncertainty
+	url = https://github.com/oamodular/uncertainty
+[submodule "examples/uncertainty-i2c"]
+	path = examples/uncertainty-i2c
+	url = https://github.com/oamodular/uncertainty
+	branch = i2c
+[submodule "examples/dffb"]
+	path = examples/dffb
+	url = https://github.com/thesquaregroot/uncertainty-dffb
+[submodule "examples/uncertaintygo"]
+	path = examples/uncertaintygo
+	url = https://github.com/awonak/UncertaintyGo
