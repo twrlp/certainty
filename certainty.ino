@@ -2,6 +2,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <Wire.h>
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/sync.h"
@@ -23,6 +24,18 @@ static const uint8_t PWM_CLKDIV_INT = 12;
 static const uint8_t PWM_CLKDIV_FRAC = 3;
 static const uint32_t PWM_SAMPLE_RATE_HZ = 4000;
 static const int64_t PWM_SAMPLE_PERIOD_US = 1000000 / PWM_SAMPLE_RATE_HZ;
+
+static const uint8_t I2C_ADDRESS = 0x55;
+static const uint8_t I2C_SDA_PIN = 6;
+static const uint8_t I2C_SCL_PIN = 7;
+static const bool ENABLE_I2C_BPM = true;
+static const uint32_t I2C_INIT_DELAY_MS = 3000;
+static const uint32_t STAGE_ON_MS = 180;
+static const uint32_t STAGE_OFF_MS = 220;
+static const uint32_t STAGE_GAP_MS = 700;
+
+// XIAO RP2040 maps GPIO6/7 to Wire (Wire0), not Wire1.
+static TwoWire &g_i2cBus = Wire;
 
 enum OutputMode : uint8_t {
   OUTPUT_MODE_GATE = 0,
@@ -76,12 +89,23 @@ static volatile uint32_t g_pwmRuns = 0;
 
 static uint32_t g_pwmSliceMask = 0;
 static bool g_pwmTimerRunning = false;
+static volatile bool g_pendingI2cBpm = false;
+static volatile uint16_t g_pendingI2cBpmValue = DEFAULT_BPM;
+static volatile uint32_t g_i2cRxCount = 0;
+static volatile uint32_t g_i2cAppliedCount = 0;
+static volatile uint32_t g_i2cErrorCount = 0;
+static bool g_i2cEnabled = false;
 
 static char g_cmdBuffer[32];
 static uint8_t g_cmdLen = 0;
 
 static int64_t gateAlarmCallback(alarm_id_t id, void *user_data);
 static bool pwmSampleCallback(repeating_timer *rt);
+static void i2cReceiveHandler(int bytesCount);
+static void i2cRequestHandler();
+static void processPendingI2cBpm();
+static bool tryInitI2cBpmReceiver();
+static void stageMarker(uint8_t count);
 
 static inline absolute_time_t absoluteFromUs(uint64_t usSinceBoot) {
   absolute_time_t t;
@@ -136,6 +160,16 @@ static inline void debugLedSet(bool on) {
 #if !defined(PIN_LED_R) && !defined(PIN_LED_G) && !defined(PIN_LED_B) && defined(LED_BUILTIN)
   digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 #endif
+}
+
+static void stageMarker(uint8_t count) {
+  for (uint8_t i = 0; i < count; ++i) {
+    debugLedSet(true);
+    delay(STAGE_ON_MS);
+    debugLedSet(false);
+    delay(STAGE_OFF_MS);
+  }
+  delay(STAGE_GAP_MS);
 }
 
 static const char *modeLabel(OutputMode mode) {
@@ -287,6 +321,108 @@ static void applyBpmAndReset(uint32_t bpm) {
   restore_interrupts(irqState);
 }
 
+static void i2cReceiveHandler(int bytesCount) {
+  if (bytesCount <= 0) {
+    return;
+  }
+
+  uint8_t raw[4] = {0, 0, 0, 0};
+  uint8_t n = 0;
+  while (n < sizeof(raw) && n < (uint8_t)bytesCount && g_i2cBus.available()) {
+    raw[n++] = (uint8_t)g_i2cBus.read();
+  }
+  while (g_i2cBus.available()) {
+    (void)g_i2cBus.read();
+  }
+
+  g_i2cRxCount++;
+
+  uint16_t bpm = 0;
+  bool valid = false;
+
+  // Teletype generic I2C layout: first byte is command id.
+  // cmd 0 = set BPM, with either:
+  // - [0, bpm8] via IISB1
+  // - [0, bpm_hi, bpm_lo] via IIS1
+  if (n >= 2 && raw[0] == 0x00 && n < 3) {
+    bpm = raw[1];
+    valid = true;
+  } else if (n >= 3 && raw[0] == 0x00) {
+    bpm = (uint16_t)(((uint16_t)raw[1] << 8) | raw[2]);
+    valid = true;
+  }
+
+  if (!valid) {
+    g_i2cErrorCount++;
+    return;
+  }
+
+  if ((uint32_t)bpm < MIN_BPM || (uint32_t)bpm > MAX_BPM) {
+    g_i2cErrorCount++;
+    return;
+  }
+
+  g_pendingI2cBpmValue = bpm;
+  g_pendingI2cBpm = true;
+}
+
+static void i2cRequestHandler() {
+  uint16_t bpm = 0;
+  const uint32_t irqState = save_and_disable_interrupts();
+  bpm = (uint16_t)g_transport.bpm;
+  restore_interrupts(irqState);
+
+  uint8_t response[2] = {(uint8_t)(bpm >> 8), (uint8_t)(bpm & 0xFF)};
+  g_i2cBus.write(response, 2);
+}
+
+static void processPendingI2cBpm() {
+  bool hasPending = false;
+  uint16_t bpm = 0;
+  uint32_t currentBpm = 0;
+
+  const uint32_t irqState = save_and_disable_interrupts();
+  if (g_pendingI2cBpm) {
+    bpm = g_pendingI2cBpmValue;
+    g_pendingI2cBpm = false;
+    hasPending = true;
+  }
+  currentBpm = g_transport.bpm;
+  restore_interrupts(irqState);
+
+  if (!hasPending) {
+    return;
+  }
+
+  // Only reset transport when BPM actually changes.
+  if ((uint32_t)bpm == currentBpm) {
+    return;
+  }
+
+  applyBpmAndReset(bpm);
+  g_i2cAppliedCount++;
+}
+
+static bool tryInitI2cBpmReceiver() {
+  if (g_i2cEnabled) {
+    return true;
+  }
+
+  stageMarker(8);
+
+  g_i2cBus.setSDA(I2C_SDA_PIN);
+  stageMarker(9);
+  g_i2cBus.setSCL(I2C_SCL_PIN);
+  stageMarker(10);
+  g_i2cBus.begin(I2C_ADDRESS);
+  stageMarker(11);
+  g_i2cBus.onReceive(i2cReceiveHandler);
+  g_i2cBus.onRequest(i2cRequestHandler);
+  stageMarker(12);
+  g_i2cEnabled = true;
+  return true;
+}
+
 static void printStatus() {
   uint32_t bpm = 0;
   uint64_t beatUs = 0;
@@ -295,6 +431,9 @@ static void printStatus() {
   uint32_t gateRuns = 0;
   uint32_t gateMisses = 0;
   uint32_t pwmRuns = 0;
+  uint32_t i2cRx = 0;
+  uint32_t i2cApplied = 0;
+  uint32_t i2cErr = 0;
 
   uint32_t gateRises[NUM_OUTPUTS];
   uint32_t gateFalls[NUM_OUTPUTS];
@@ -310,6 +449,9 @@ static void printStatus() {
   gateRuns = g_gateSchedulerRuns;
   gateMisses = g_gateSchedulerMisses;
   pwmRuns = g_pwmRuns;
+  i2cRx = g_i2cRxCount;
+  i2cApplied = g_i2cAppliedCount;
+  i2cErr = g_i2cErrorCount;
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     gateRises[i] = g_outputs[i].gateRises;
     gateFalls[i] = g_outputs[i].gateFalls;
@@ -332,7 +474,13 @@ static void printStatus() {
   Serial.print(" gate_misses=");
   Serial.print(gateMisses);
   Serial.print(" pwm_runs=");
-  Serial.println(pwmRuns);
+  Serial.print(pwmRuns);
+  Serial.print(" i2c_rx=");
+  Serial.print(i2cRx);
+  Serial.print(" i2c_applied=");
+  Serial.print(i2cApplied);
+  Serial.print(" i2c_err=");
+  Serial.println(i2cErr);
 
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     const OutputState &out = g_outputs[i];
@@ -370,6 +518,8 @@ static void printBriefDiag() {
   uint16_t pwmLevel4 = 0;
   uint16_t pwmLevel6 = 0;
   uint16_t pwmLevel8 = 0;
+  uint32_t i2cApplied = 0;
+  uint32_t i2cErr = 0;
 
   const uint32_t irqState = save_and_disable_interrupts();
   bpm = g_transport.bpm;
@@ -381,6 +531,8 @@ static void printBriefDiag() {
   pwmLevel4 = g_outputs[3].lastPwmLevel;
   pwmLevel6 = g_outputs[5].lastPwmLevel;
   pwmLevel8 = g_outputs[7].lastPwmLevel;
+  i2cApplied = g_i2cAppliedCount;
+  i2cErr = g_i2cErrorCount;
   restore_interrupts(irqState);
 
   Serial.print("diag bpm=");
@@ -402,7 +554,11 @@ static void printBriefDiag() {
   Serial.print(" tri6=");
   Serial.print(pwmLevel6);
   Serial.print(" tri8=");
-  Serial.println(pwmLevel8);
+  Serial.print(pwmLevel8);
+  Serial.print(" i2c_applied=");
+  Serial.print(i2cApplied);
+  Serial.print(" i2c_err=");
+  Serial.println(i2cErr);
 }
 
 static void handleCommand(const char *cmd) {
@@ -560,15 +716,37 @@ void setup() {
   }
 
   configureOutputPinsForModes();
+  stageMarker(1);
 
   g_pwmTimerRunning =
       add_repeating_timer_us(-PWM_SAMPLE_PERIOD_US, pwmSampleCallback, nullptr, &g_pwmTimer);
+  stageMarker(2);
 
   applyBpmAndReset(DEFAULT_BPM);
+  stageMarker(3);
+
+  if (ENABLE_I2C_BPM) {
+    // Prepare bus pins as pulled-up inputs first; actual Wire init is deferred
+    // to loop until after startup settles.
+    pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+    pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+    stageMarker(4);
+  } else {
+    stageMarker(6);
+  }
 
   Serial.println("certainty clock phase1+3 foundation");
   Serial.println("defaults: out1/3/5/7 gate, out2/4/6/8 triangle lfo");
   Serial.println("ratios: /2,/2,1x,1x,2x,2x,4x,4x");
+  Serial.print("i2c addr=0x");
+  Serial.println(I2C_ADDRESS, HEX);
+  Serial.println("i2c bpm write: [bpm8] or [bpm_hi bpm_lo] or [0x00 bpm_hi bpm_lo]");
+  if (ENABLE_I2C_BPM) {
+    Serial.print("i2c init=deferred, delay_ms=");
+    Serial.println(I2C_INIT_DELAY_MS);
+  } else {
+    Serial.println("i2c init=disabled (safe boot)");
+  }
   Serial.print("pwm carrier hz~");
   Serial.println(
       (uint32_t)(125000000u / ((PWM_WRAP + 1u) * (PWM_CLKDIV_INT + (PWM_CLKDIV_FRAC / 16.0f)))));
@@ -578,16 +756,43 @@ void setup() {
   Serial.println(g_pwmTimerRunning ? "ok" : "failed");
   Serial.println("commands: bpm <20-320>, status, help");
   printStatus();
+  stageMarker(7);
 }
 
 void loop() {
   static uint32_t lastLedToggleMs = 0;
   static uint32_t lastStatusMs = 0;
+  static uint32_t lastI2cRetryMs = 0;
   static bool ledOn = false;
 
+  const uint32_t now = millis();
+  if (ENABLE_I2C_BPM && !g_i2cEnabled && now >= I2C_INIT_DELAY_MS &&
+      (now - lastI2cRetryMs >= 1000)) {
+    lastI2cRetryMs = now;
+    const bool sdaHigh = (digitalRead(I2C_SDA_PIN) == HIGH);
+    const bool sclHigh = (digitalRead(I2C_SCL_PIN) == HIGH);
+    if (!sdaHigh || !sclHigh) {
+      if (!sdaHigh && !sclHigh) {
+        stageMarker(6);
+      } else if (!sdaHigh) {
+        stageMarker(13);
+      } else {
+        stageMarker(14);
+      }
+    }
+    if (tryInitI2cBpmReceiver()) {
+      stageMarker(5);
+      Serial.println("i2c init=ok");
+    } else {
+      stageMarker(6);
+    }
+  }
+
+  if (ENABLE_I2C_BPM) {
+    processPendingI2cBpm();
+  }
   processSerialCommands();
 
-  const uint32_t now = millis();
   if (now - lastLedToggleMs >= HEARTBEAT_MS) {
     lastLedToggleMs = now;
     ledOn = !ledOn;
