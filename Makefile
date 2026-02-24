@@ -1,5 +1,5 @@
 FQBN ?= rp2040:rp2040:seeed_xiao_rp2040
-OUT_DIR ?= build
+OUT_DIR ?= bin
 PORT ?=
 BAUD ?= 115200
 
@@ -9,7 +9,7 @@ all: build
 
 build:
 	mkdir -p $(OUT_DIR)
-	arduino-cli compile --fqbn "$(FQBN)" --output-dir "$(OUT_DIR)" .
+	arduino-cli compile --fqbn "$(FQBN)" --build-path "$(OUT_DIR)/.arduino-build" --output-dir "$(OUT_DIR)" .
 
 clean:
 	rm -rf "$(OUT_DIR)"
