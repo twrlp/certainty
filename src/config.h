@@ -19,7 +19,7 @@ static const uint32_t I2C_ACTIVITY_PULSE_MS = 20;
 static const uint16_t PWM_WRAP = 255;
 static const uint8_t PWM_CLKDIV_INT = 12;
 static const uint8_t PWM_CLKDIV_FRAC = 3;
-static const uint32_t PWM_SAMPLE_RATE_HZ = 4000;
+static const uint32_t PWM_SAMPLE_RATE_HZ = 8000;
 static const int64_t PWM_SAMPLE_PERIOD_US = 1000000 / PWM_SAMPLE_RATE_HZ;
 
 static const uint8_t I2C_ADDRESS = 0x55;

@@ -10,6 +10,26 @@
 
 namespace certainty {
 
+static inline uint32_t xorshift32(uint32_t x) {
+  x ^= x << 13u;
+  x ^= x >> 17u;
+  x ^= x << 5u;
+  return x;
+}
+
+static bool sampleLoopRetrigger(uint8_t probPercent) {
+  if (probPercent >= 100) {
+    return true;
+  }
+  if (probPercent == 0) {
+    return false;
+  }
+
+  static uint32_t rngState = 0xA341316Cu;
+  rngState = xorshift32(rngState ^ (uint32_t)time_us_64());
+  return (rngState % 100u) < probPercent;
+}
+
 void configurePinAsGateOutput(uint8_t pin) {
   gpio_init(pin);
   gpio_set_dir(pin, GPIO_OUT);
@@ -128,10 +148,21 @@ int64_t gateAlarmCallback(alarm_id_t id, void *user_data) {
     }
 
     if (out.run == OUTPUT_RUN_LOOP && !out.gateHigh && (int64_t)(nowUs - out.nextRiseUs) >= 0) {
-      gpio_put(out.pin, 1);
-      out.gateHigh = true;
-      out.gateRises++;
-      out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
+      if (sampleLoopRetrigger(out.loopProbPercent)) {
+        gpio_put(out.pin, 1);
+        out.gateHigh = true;
+        out.gateRises++;
+        out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
+      } else {
+        do {
+          out.nextRiseUs += out.periodUs;
+          if ((int64_t)(nowUs - out.nextRiseUs) >= 0) {
+            g_module.gateSchedulerMisses++;
+          }
+        } while ((int64_t)(nowUs - out.nextRiseUs) >= 0);
+
+        out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
+      }
     }
   }
 

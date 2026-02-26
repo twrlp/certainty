@@ -79,6 +79,8 @@ void resetTransportLocked(uint32_t bpm, uint64_t nowUs) {
     out.periodUs = periodFromRatio(g_module.transport.beatPeriodUs, out.ratio);
     refreshAsrTimingLocked(out);
     out.lfoAnchorUs = g_module.transport.anchorUs;
+    out.loopCycleIndex = (uint64_t)-1;
+    out.loopCycleActive = true;
     out.ratioPending = false;
     out.pendingApplyUs = g_module.transport.anchorUs;
     out.pendingRatio = out.ratio;

@@ -41,6 +41,9 @@ void appSetup() {
 
     out.periodUs = 0;
     out.lfoAnchorUs = 0;
+    out.loopProbPercent = 100;
+    out.loopCycleIndex = (uint64_t)-1;
+    out.loopCycleActive = true;
     out.asrSus = 0;
     out.asrSkew = 5;
     out.asrA = 1;

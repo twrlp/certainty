@@ -114,6 +114,26 @@ static uint16_t asrLevelFromTime(uint64_t nowUs,
   return asrLevelFromElapsed(elapsedUs, durationUs, attackUs, sustainUs, releaseUs);
 }
 
+static inline uint32_t xorshift32(uint32_t x) {
+  x ^= x << 13u;
+  x ^= x >> 17u;
+  x ^= x << 5u;
+  return x;
+}
+
+static bool sampleLoopRetrigger(uint8_t probPercent) {
+  if (probPercent >= 100) {
+    return true;
+  }
+  if (probPercent == 0) {
+    return false;
+  }
+
+  static uint32_t rngState = 0xC8013EA4u;
+  rngState = xorshift32(rngState ^ (uint32_t)time_us_64());
+  return (rngState % 100u) < probPercent;
+}
+
 bool usesPwm(OutputShape shape) {
   return shape == OUTPUT_SHAPE_ASR;
 }
@@ -209,13 +229,24 @@ bool pwmSampleCallback(repeating_timer *rt) {
 
     uint16_t level = 0;
     if (out.run == OUTPUT_RUN_LOOP) {
-      level = asrLevelFromTime(nowUs,
-                               out.lfoAnchorUs,
-                               out.periodUs,
-                               out.asrAttackUs,
-                               out.asrSustainUs,
-                               out.asrReleaseUs,
-                               true);
+      if (out.periodUs >= 2 && (int64_t)(nowUs - out.lfoAnchorUs) >= 0) {
+        const uint64_t elapsedUs = nowUs - out.lfoAnchorUs;
+        const uint64_t cycleIndex = elapsedUs / out.periodUs;
+        const uint64_t cycleElapsedUs = elapsedUs % out.periodUs;
+
+        if (cycleIndex != out.loopCycleIndex) {
+          out.loopCycleIndex = cycleIndex;
+          out.loopCycleActive = sampleLoopRetrigger(out.loopProbPercent);
+        }
+
+        if (out.loopCycleActive) {
+          level = asrLevelFromElapsed(cycleElapsedUs,
+                                      out.periodUs,
+                                      out.asrAttackUs,
+                                      out.asrSustainUs,
+                                      out.asrReleaseUs);
+        }
+      }
     } else if (out.asrOneShotActive) {
       level = asrLevelFromTime(nowUs,
                                out.asrOneShotStartUs,

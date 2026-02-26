@@ -29,6 +29,9 @@ struct OutputState {
 
   uint64_t periodUs;
   uint64_t lfoAnchorUs;
+  uint8_t loopProbPercent;
+  uint64_t loopCycleIndex;
+  bool loopCycleActive;
   uint8_t asrSus;
   uint8_t asrSkew;
   uint8_t asrA;
@@ -76,6 +79,7 @@ enum I2cEventType : uint8_t {
   I2C_EVENT_SET_MODE = 2,
   I2C_EVENT_SET_ASR = 3,
   I2C_EVENT_TRIGGER = 4,
+  I2C_EVENT_SET_PROB = 5,
 };
 
 struct I2cEvent {

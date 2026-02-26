@@ -142,6 +142,26 @@ static bool decodeI2cEvent(const uint8_t *raw, uint8_t len, I2cEvent *event) {
     return true;
   }
 
+  // cmd 5 = set per-output loop retrigger probability: [5, out, prob]
+  if (raw[0] == 0x05 && len >= 3) {
+    uint8_t outIndex = 0;
+    if (!decodeOutIndex(raw[1], &outIndex)) {
+      return false;
+    }
+    const uint8_t prob = raw[2];
+    if (prob > 100) {
+      return false;
+    }
+
+    event->type = I2C_EVENT_SET_PROB;
+    event->out = outIndex;
+    event->a = prob;
+    event->b = 0;
+    event->mask = 0;
+    event->count = 0;
+    return true;
+  }
+
   return false;
 }
 

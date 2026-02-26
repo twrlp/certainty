@@ -147,6 +147,21 @@ void applyI2cEvent(const I2cEvent &event) {
       break;
     }
 
+    case I2C_EVENT_SET_PROB: {
+      const uint8_t outIndex = event.out;
+      const uint8_t prob = event.a;
+      if (outIndex >= NUM_OUTPUTS || prob > 100) {
+        g_module.i2cErrorCount++;
+        break;
+      }
+
+      const uint32_t irqState = save_and_disable_interrupts();
+      OutputState &out = g_module.outputs[outIndex];
+      out.loopProbPercent = prob;
+      restore_interrupts(irqState);
+      break;
+    }
+
     case I2C_EVENT_TRIGGER:
       applyTriggerEvent(event.mask, event.count);
       break;
@@ -183,6 +198,8 @@ void processDueConfigChanges() {
         channelAffectsGateSchedule = true;
       } else if (out.shape == OUTPUT_SHAPE_ASR && out.run == OUTPUT_RUN_LOOP) {
         out.lfoAnchorUs = g_module.transport.anchorUs;
+        out.loopCycleIndex = (uint64_t)-1;
+        out.loopCycleActive = true;
       }
     }
 
@@ -232,6 +249,8 @@ void processDueConfigChanges() {
       } else {
         if (newRun == OUTPUT_RUN_LOOP) {
           out.lfoAnchorUs = g_module.transport.anchorUs;
+          out.loopCycleIndex = (uint64_t)-1;
+          out.loopCycleActive = true;
           out.asrOneShotActive = false;
           out.pendingTriggerCount = 0;
         } else {
