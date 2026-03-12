@@ -6,6 +6,7 @@
 #include "module_state.h"
 #include "config.h"
 #include "gate_scheduler.h"
+#include "rng.h"
 
 namespace certainty {
 
@@ -43,11 +44,14 @@ static void computeAsrSegments(uint64_t durationUs,
   }
 
   if (attack + sustain >= durationUs) {
-    if (sustain > 0) {
-      sustain = durationUs - 1;
-    } else if (attack > 0) {
-      attack = durationUs - 1;
+    if (r > 0) {
+      if (sustain > 0) {
+        sustain = durationUs - attack - 1;
+      } else if (attack > 0) {
+        attack = durationUs - 1;
+      }
     }
+    // r == 0: attack + sustain == durationUs is correct; releaseUs = 0 is intended
   }
 
   *attackUs = attack;
@@ -112,26 +116,6 @@ static uint16_t asrLevelFromTime(uint64_t nowUs,
     return 0;
   }
   return asrLevelFromElapsed(elapsedUs, durationUs, attackUs, sustainUs, releaseUs);
-}
-
-static inline uint32_t xorshift32(uint32_t x) {
-  x ^= x << 13u;
-  x ^= x >> 17u;
-  x ^= x << 5u;
-  return x;
-}
-
-static bool sampleLoopRetrigger(uint8_t probPercent) {
-  if (probPercent >= 100) {
-    return true;
-  }
-  if (probPercent == 0) {
-    return false;
-  }
-
-  static uint32_t rngState = 0xC8013EA4u;
-  rngState = xorshift32(rngState ^ (uint32_t)time_us_64());
-  return (rngState % 100u) < probPercent;
 }
 
 bool usesPwm(OutputShape shape) {

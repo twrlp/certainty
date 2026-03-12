@@ -265,11 +265,11 @@ void processI2cEvents() {
   }
 }
 
-bool tryInitI2cBpmReceiver() {
-  if (g_module.i2cEnabled) {
-    return true;
-  }
-
+void tryInitI2cBpmReceiver() {
+  if (g_module.i2cEnabled) return;
+  // Arduino Wire.begin() does not report failure; i2cEnabled signals to the
+  // retry loop that init was attempted. If the bus never comes up, i2cRxCount
+  // will stay 0.
   g_i2cBus.setSDA(I2C_SDA_PIN);
   g_i2cBus.setSCL(I2C_SCL_PIN);
   g_i2cBus.begin(I2C_ADDRESS);
@@ -277,7 +277,6 @@ bool tryInitI2cBpmReceiver() {
   g_i2cBus.onRequest(i2cRequestHandler);
   configureIrqPriorities();
   g_module.i2cEnabled = true;
-  return true;
 }
 
 }  // namespace certainty

@@ -19,8 +19,8 @@ static const Ratio DEFAULT_RATIOS[NUM_OUTPUTS] = {
     {1, 2}, {1, 2}, {1, 1}, {1, 1}, {2, 1}, {2, 1}, {4, 1}, {4, 1}};
 
 static const OutputShape DEFAULT_SHAPES[NUM_OUTPUTS] = {
-    OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_ASR, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_ASR,
-    OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_ASR, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_ASR};
+    OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG,
+    OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG, OUTPUT_SHAPE_TRIG};
 
 static const OutputRun DEFAULT_RUNS[NUM_OUTPUTS] = {
     OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP,
@@ -90,7 +90,7 @@ void appSetup() {
     pinMode(I2C_SDA_PIN, INPUT_PULLUP);
     pinMode(I2C_SCL_PIN, INPUT_PULLUP);
     if (digitalRead(I2C_SDA_PIN) == HIGH && digitalRead(I2C_SCL_PIN) == HIGH) {
-      (void)tryInitI2cBpmReceiver();
+      tryInitI2cBpmReceiver();
     }
   }
 }
@@ -111,7 +111,7 @@ void appLoop() {
     const bool sdaHigh = (digitalRead(I2C_SDA_PIN) == HIGH);
     const bool sclHigh = (digitalRead(I2C_SCL_PIN) == HIGH);
     if (sdaHigh && sclHigh) {
-      (void)tryInitI2cBpmReceiver();
+      tryInitI2cBpmReceiver();
     }
   }
 

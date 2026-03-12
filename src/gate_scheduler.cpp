@@ -6,29 +6,10 @@
 #include "module_state.h"
 #include "config.h"
 #include "pwm_engine.h"
+#include "rng.h"
 #include "transport.h"
 
 namespace certainty {
-
-static inline uint32_t xorshift32(uint32_t x) {
-  x ^= x << 13u;
-  x ^= x >> 17u;
-  x ^= x << 5u;
-  return x;
-}
-
-static bool sampleLoopRetrigger(uint8_t probPercent) {
-  if (probPercent >= 100) {
-    return true;
-  }
-  if (probPercent == 0) {
-    return false;
-  }
-
-  static uint32_t rngState = 0xA341316Cu;
-  rngState = xorshift32(rngState ^ (uint32_t)time_us_64());
-  return (rngState % 100u) < probPercent;
-}
 
 void configurePinAsGateOutput(uint8_t pin) {
   gpio_init(pin);

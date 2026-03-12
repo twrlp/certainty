@@ -8,6 +8,6 @@ void i2cReceiveHandler(int bytesCount);
 void i2cRequestHandler();
 
 void processI2cEvents();
-bool tryInitI2cBpmReceiver();
+void tryInitI2cBpmReceiver();
 
 }  // namespace certainty
