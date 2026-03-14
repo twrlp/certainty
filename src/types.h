@@ -85,6 +85,8 @@ struct MidiUartState {
   uint8_t       sampleCount;
   uint8_t       bitIndex;
   uint8_t       byte;
+  uint8_t       bitVoteMarkCount;  // mark votes for current data bit (majority vote across 3 samples)
+  uint8_t       errorGuardCount;   // samples remaining before start-bit detection re-enables after error
   uint32_t      readIdx;      // position in DMA ring buffer
   int           dataChannel;  // DMA data channel (ADC → ring buffer)
   int           ctrlChannel;  // DMA control channel (reloads data channel)
@@ -113,9 +115,11 @@ struct MidiUartState {
   volatile uint8_t adcStartThreshold; // higher threshold for start-bit edge detect
 
   // Inter-core SPSC ring buffer — Core 1 writes (msgHead), Core 0 reads (msgTail).
-  volatile uint8_t msgBuf[16];
-  volatile uint8_t msgHead;
-  volatile uint8_t msgTail;
+  // msgTimeBuf stores the low 32 bits of time_us_64() at decode time, parallel to msgBuf.
+  volatile uint8_t  msgBuf[16];
+  volatile uint32_t msgTimeBuf[16];
+  volatile uint8_t  msgHead;
+  volatile uint8_t  msgTail;
 
   volatile uint8_t  dbgStartSample;    // ADC at mid start bit
   volatile uint8_t  dbgStopSample;     // ADC at mid stop bit
