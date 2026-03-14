@@ -13,13 +13,14 @@ struct ModuleState {
   OutputState outputs[NUM_OUTPUTS];
   TransportState transport;
   alarm_id_t gateAlarmId;
-  repeating_timer pwmTimer;
   volatile uint32_t gateSchedulerRuns;
   volatile uint32_t gateSchedulerMisses;
-  volatile uint32_t pwmRuns;
 
-  uint32_t pwmSliceMask;
-  bool pwmTimerRunning;
+  ClockFollowerState clockFollower;
+  MidiClockState     midi;
+  MidiUartState      midiUart;
+  repeating_timer    mainTimer;
+  bool               mainTimerRunning;
 
   I2cRxFrame i2cRxQueue[I2C_RX_QUEUE_LEN];
   volatile uint8_t i2cRxHead;
@@ -29,12 +30,9 @@ struct ModuleState {
   volatile uint32_t i2cEventQueueDropCount;
   volatile uint32_t i2cEventQueueDropTriggerCount;
   volatile uint32_t i2cEventQueueDropConfigCount;
-  volatile uint16_t i2cLedPulsePending;
-
   volatile uint32_t i2cAppliedCount;
   volatile uint32_t i2cRatioAppliedCount;
   volatile uint32_t i2cModeAppliedCount;
-  volatile uint32_t i2cAsrAppliedCount;
   volatile uint32_t i2cTriggerAppliedCount;
   volatile uint32_t i2cTriggerSaturatedCount;
   volatile uint32_t i2cErrorCount;

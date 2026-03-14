@@ -1,13 +1,11 @@
 #include "transport.h"
 
 #include "hardware/gpio.h"
-#include "hardware/pwm.h"
 #include "hardware/sync.h"
 
 #include "module_state.h"
 #include "config.h"
 #include "gate_scheduler.h"
-#include "pwm_engine.h"
 
 namespace certainty {
 
@@ -27,17 +25,11 @@ uint32_t clampBpm(uint32_t bpm) {
   return bpm;
 }
 
-uint64_t periodFromRatio(uint64_t beatPeriodUs, Ratio ratio) {
-  uint64_t period = (beatPeriodUs * ratio.den + (ratio.num / 2u)) / ratio.num;
-  const uint64_t minPeriod = (uint64_t)GATE_PULSE_US + 1000u;
-  if (period < minPeriod) {
-    return minPeriod;
-  }
-  return period;
-}
-
 uint64_t nextBeatBoundaryAfterLocked(uint64_t nowUs) {
-  const uint64_t anchorUs = g_module.transport.anchorUs;
+  const ClockFollowerState &cf = g_module.clockFollower;
+  const uint64_t anchorUs = (cf.mode == CLK_FOLLOW_LOCKED)
+      ? g_module.transport.beatAnchorUs
+      : g_module.transport.anchorUs;
   const uint64_t beatUs = g_module.transport.beatPeriodUs;
   if (beatUs == 0) {
     return nowUs + 1;
@@ -50,64 +42,38 @@ uint64_t nextBeatBoundaryAfterLocked(uint64_t nowUs) {
   return anchorUs + ((beatsElapsed + 1u) * beatUs);
 }
 
-uint64_t alignToGlobalPhaseGridAtOrAfterLocked(uint64_t atLeastUs, uint64_t periodUs) {
-  const uint64_t anchorUs = g_module.transport.anchorUs;
-  if (periodUs == 0) {
-    return atLeastUs;
-  }
-  if ((int64_t)(atLeastUs - anchorUs) <= 0) {
-    return anchorUs;
-  }
-  const uint64_t elapsedUs = atLeastUs - anchorUs;
-  const uint64_t steps = (elapsedUs + periodUs - 1u) / periodUs;
-  return anchorUs + (steps * periodUs);
-}
-
 void resetTransportLocked(uint32_t bpm, uint64_t nowUs) {
   if (g_module.gateAlarmId >= 0) {
     cancel_alarm(g_module.gateAlarmId);
     g_module.gateAlarmId = -1;
   }
 
-  g_module.transport.bpm = clampBpm(bpm);
+  g_module.transport.bpm          = clampBpm(bpm);
   g_module.transport.beatPeriodUs = 60000000ull / g_module.transport.bpm;
-  g_module.transport.anchorUs = nowUs + START_DELAY_US;
+  g_module.transport.anchorUs     = nowUs + START_DELAY_US;
+  g_module.transport.beatAnchorUs = nowUs + START_DELAY_US;
   g_module.transport.resetCount++;
+
+  const float beatPeriodTicks =
+      float(g_module.transport.beatPeriodUs) / float(PWM_SAMPLE_PERIOD_US);
 
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
-    out.periodUs = periodFromRatio(g_module.transport.beatPeriodUs, out.ratio);
-    refreshAsrTimingLocked(out);
-    out.lfoAnchorUs = g_module.transport.anchorUs;
-    out.loopCycleIndex = (uint64_t)-1;
-    out.loopCycleActive = true;
-    out.ratioPending = false;
-    out.pendingApplyUs = g_module.transport.anchorUs;
-    out.pendingRatio = out.ratio;
-    out.behaviorPending = false;
-    out.behaviorPendingApplyUs = g_module.transport.anchorUs;
-    out.pendingShape = out.shape;
-    out.pendingRun = out.run;
+    out.phase              = 0.0f;
+    out.freq               = float(out.ratio.num) /
+                             (float(out.ratio.den) * beatPeriodTicks);
+    out.ratioPending       = false;
+    out.pendingApplyUs     = g_module.transport.anchorUs;
+    out.pendingRatio       = out.ratio;
+    out.pendingRunPending  = false;
+    out.pendingRunApplyUs  = g_module.transport.anchorUs;
+    out.pendingRun         = out.run;
     out.pendingTriggerCount = 0;
-    out.asrOneShotActive = false;
-    out.asrOneShotStartUs = g_module.transport.anchorUs;
-    out.asrOneShotDurationUs = out.periodUs;
-    out.asrOneShotAttackUs = out.asrAttackUs;
-    out.asrOneShotSustainUs = out.asrSustainUs;
-    out.asrOneShotReleaseUs = out.asrReleaseUs;
-    out.nextRiseUs = g_module.transport.anchorUs;
-    out.nextFallUs = g_module.transport.anchorUs + GATE_PULSE_US;
-    out.gateHigh = false;
-    out.gateRises = 0;
-    out.gateFalls = 0;
-    out.lfoUpdates = 0;
-    out.lastPwmLevel = 0;
-
-    if (out.shape != OUTPUT_SHAPE_ASR) {
-      gpio_put(out.pin, 0);
-    } else {
-      pwm_set_gpio_level(out.pin, 0);
-    }
+    out.nextFallUs         = g_module.transport.anchorUs + GATE_PULSE_US;
+    out.gateHigh           = false;
+    out.gateRises          = 0;
+    out.gateFalls          = 0;
+    gpio_put(out.pin, 0);
   }
 
   scheduleNextAlarmLocked();

@@ -12,13 +12,6 @@ static const uint32_t MIN_BPM = 20;
 static const uint32_t MAX_BPM = 320;
 static const uint32_t GATE_PULSE_US = 10000;
 static const uint32_t START_DELAY_US = 0;
-static const uint32_t HEARTBEAT_MS = 500;
-static const bool ENABLE_I2C_ACTIVITY_LED = true;
-static const uint32_t I2C_ACTIVITY_PULSE_MS = 20;
-
-static const uint16_t PWM_WRAP = 255;
-static const uint8_t PWM_CLKDIV_INT = 12;
-static const uint8_t PWM_CLKDIV_FRAC = 3;
 static const uint32_t PWM_SAMPLE_RATE_HZ = 8000;
 static const int64_t PWM_SAMPLE_PERIOD_US = 1000000 / PWM_SAMPLE_RATE_HZ;
 
@@ -32,6 +25,16 @@ static const uint8_t TIMER_IRQ_PRIORITY = 0x80;
 
 static const uint8_t I2C_RX_MAX_BYTES = 6;
 static const uint8_t I2C_RX_QUEUE_LEN = 128;
-static const uint32_t I2C_ERROR_LATCH_MS = 180;
+
+static const uint8_t  CLK_IN_PIN             = 26;
+
+static const bool     ENABLE_MIDI_CLOCK      = true;
+static const uint8_t  MIDI_ADC_THRESHOLD     = 160;   // 8-bit: low threshold to handle slow optocoupler recovery
+static const uint32_t MIDI_TIMEOUT_US        = 2000000;
+static const uint8_t  MIDI_ADC_BUF_LOG2     = 8;      // 2^8 = 256 bytes
+static const uint32_t MIDI_ADC_BUF_SIZE     = (1u << MIDI_ADC_BUF_LOG2);
+static const uint16_t MIDI_ADC_CLKDIV       = 0;      // CLKDIV=0 → no extra division; ADC takes 96 cycles at 48MHz → 500kHz
+static const uint8_t  MIDI_SAMPLES_PER_BIT  = 16;    // 500kHz / 31250 baud
+static const uint8_t  MIDI_RT_PPQN          = 24;    // MIDI Real-Time clock pulses per quarter note
 
 }  // namespace certainty

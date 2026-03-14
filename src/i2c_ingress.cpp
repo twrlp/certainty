@@ -11,6 +11,9 @@
 
 namespace certainty {
 
+// Accepts both 1-indexed (outRaw 1..NUM_OUTPUTS) and 0-indexed (outRaw 0..NUM_OUTPUTS-1)
+// callers. Both branches map to the same output[0..NUM_OUTPUTS-1] index. The second branch
+// is only reachable when outRaw == 0, since values ≥ 1 are consumed by the first branch.
 static bool decodeOutIndex(uint8_t outRaw, uint8_t *outIndex) {
   if (outRaw >= 1 && outRaw <= NUM_OUTPUTS) {
     *outIndex = (uint8_t)(outRaw - 1);
@@ -75,44 +78,21 @@ static bool decodeI2cEvent(const uint8_t *raw, uint8_t len, I2cEvent *event) {
     return true;
   }
 
-  // cmd 2 = set one output behavior: [2, out, shape, run]
-  if (raw[0] == 0x02 && len >= 4) {
+  // cmd 2 = set run mode: [2, out, run]  (0=one-shot CT.OS, 1=loop CT.CLK)
+  if (raw[0] == 0x02 && len >= 3) {
     uint8_t outIndex = 0;
     if (!decodeOutIndex(raw[1], &outIndex)) {
       return false;
     }
-    const uint8_t shapeRaw = raw[2];
-    const uint8_t runRaw = raw[3];
-    if (shapeRaw > (uint8_t)OUTPUT_SHAPE_ASR || runRaw > (uint8_t)OUTPUT_RUN_LOOP) {
+    const uint8_t runRaw = raw[2];
+    if (runRaw > (uint8_t)OUTPUT_RUN_LOOP) {
       return false;
     }
-
-    event->type = I2C_EVENT_SET_MODE;
-    event->out = outIndex;
-    event->a = shapeRaw;
-    event->b = runRaw;
-    event->mask = 0;
-    event->count = 0;
-    return true;
-  }
-
-  // cmd 3 = set one output ASR controls: [3, out, sus, skew]
-  if (raw[0] == 0x03 && len >= 4) {
-    uint8_t outIndex = 0;
-    if (!decodeOutIndex(raw[1], &outIndex)) {
-      return false;
-    }
-    const uint8_t sus = raw[2];
-    const uint8_t skew = raw[3];
-    if (sus > 10 || skew > 10) {
-      return false;
-    }
-
-    event->type = I2C_EVENT_SET_ASR;
-    event->out = outIndex;
-    event->a = sus;
-    event->b = skew;
-    event->mask = 0;
+    event->type  = I2C_EVENT_SET_MODE;
+    event->out   = outIndex;
+    event->a     = 0;
+    event->b     = runRaw;
+    event->mask  = 0;
     event->count = 0;
     return true;
   }
@@ -227,9 +207,6 @@ void i2cReceiveHandler(int bytesCount) {
   }
 
   g_module.i2cRxCount++;
-  if (ENABLE_I2C_ACTIVITY_LED && g_module.i2cLedPulsePending < 0xFFFFu) {
-    g_module.i2cLedPulsePending++;
-  }
   if (len == 0) {
     return;
   }
@@ -253,7 +230,7 @@ void i2cRequestHandler() {
   // Request/response is intentionally disabled for now.
 }
 
-void processI2cEvents() {
+void processI2cEvents(uint64_t nowUs) {
   I2cRxFrame frame = {};
   I2cEvent event = {};
   while (dequeueI2cRx(&frame)) {
@@ -261,7 +238,7 @@ void processI2cEvents() {
       g_module.i2cErrorCount++;
       continue;
     }
-    applyI2cEvent(event);
+    applyI2cEvent(event, nowUs);
   }
 }
 

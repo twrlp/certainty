@@ -5,8 +5,6 @@
 
 #include "module_state.h"
 #include "config.h"
-#include "pwm_engine.h"
-#include "rng.h"
 #include "transport.h"
 
 namespace certainty {
@@ -20,21 +18,15 @@ void configurePinAsGateOutput(uint8_t pin) {
 void scheduleNextAlarmLocked() {
   const uint64_t nowUs = time_us_64();
   uint64_t nextDueUs = UINT64_MAX;
+
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     const OutputState &out = g_module.outputs[i];
-    uint64_t dueUs = UINT64_MAX;
-    if (out.shape == OUTPUT_SHAPE_TRIG) {
-      if (out.gateHigh && out.nextFallUs < dueUs) {
-        dueUs = out.nextFallUs;
-      } else if (out.run == OUTPUT_RUN_LOOP && out.nextRiseUs < dueUs) {
-        dueUs = out.nextRiseUs;
-      } else if (out.run == OUTPUT_RUN_ONE_SHOT && out.pendingTriggerCount > 0 && nowUs < dueUs) {
-        dueUs = nowUs;
-      }
+    if (out.gateHigh && out.nextFallUs < nextDueUs) {
+      nextDueUs = out.nextFallUs;
     }
-
-    if (dueUs < nextDueUs) {
-      nextDueUs = dueUs;
+    if (!out.gateHigh && out.run == OUTPUT_RUN_ONE_SHOT &&
+        out.pendingTriggerCount > 0) {
+      nextDueUs = nowUs;
     }
   }
 
@@ -43,7 +35,11 @@ void scheduleNextAlarmLocked() {
     return;
   }
 
-  g_module.gateAlarmId = add_alarm_at(absoluteFromUs(nextDueUs), gateAlarmCallback, nullptr, true);
+  g_module.gateAlarmId =
+      add_alarm_at(absoluteFromUs(nextDueUs), gateAlarmCallback, nullptr, true);
+  // fire_if_past=true means a negative return does NOT indicate a lost trigger —
+  // the SDK reschedules for now+1µs. gateSchedulerMisses is a low-water-mark for
+  // alarm pool pressure, not a drop counter.
   if (g_module.gateAlarmId < 0) {
     g_module.gateSchedulerMisses++;
   }
@@ -59,20 +55,7 @@ void rescheduleGateAlarmLocked() {
 
 void ensureGateSchedulerRunning() {
   const uint32_t irqState = save_and_disable_interrupts();
-  if (g_module.gateAlarmId >= 0) {
-    restore_interrupts(irqState);
-    return;
-  }
-
-  bool hasTrigOutput = false;
-  for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
-    if (g_module.outputs[i].shape == OUTPUT_SHAPE_TRIG) {
-      hasTrigOutput = true;
-      break;
-    }
-  }
-
-  if (hasTrigOutput) {
+  if (g_module.gateAlarmId < 0) {
     scheduleNextAlarmLocked();
   }
   restore_interrupts(irqState);
@@ -85,65 +68,26 @@ int64_t gateAlarmCallback(alarm_id_t id, void *user_data) {
   g_module.gateSchedulerRuns++;
   const uint64_t nowUs = time_us_64();
 
+  // All alarm and repeating-timer callbacks share TIMER_IRQ_3 (same alarm pool).
+  // They cannot preempt each other, so no additional interrupt lock is needed here.
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
-    if (out.shape != OUTPUT_SHAPE_TRIG) {
-      continue;
-    }
 
-    // Config commits are handled in loop(); once the transition point is due,
-    // stop producing trig edges until the commit completes.
-    if (out.behaviorPending && out.pendingShape == OUTPUT_SHAPE_ASR &&
-        (int64_t)(nowUs - out.behaviorPendingApplyUs) >= 0) {
-      if (out.gateHigh) {
-        gpio_put(out.pin, 0);
-        out.gateHigh = false;
-        out.gateFalls++;
-      }
-      continue;
-    }
-
-    if (!out.gateHigh && out.run == OUTPUT_RUN_ONE_SHOT && out.pendingTriggerCount > 0) {
+    // One-shot rise
+    if (!out.gateHigh && out.run == OUTPUT_RUN_ONE_SHOT &&
+        out.pendingTriggerCount > 0) {
       gpio_put(out.pin, 1);
-      out.gateHigh = true;
+      out.gateHigh   = true;
       out.gateRises++;
       out.nextFallUs = nowUs + GATE_PULSE_US;
       out.pendingTriggerCount--;
     }
 
+    // Fall
     if (out.gateHigh && (int64_t)(nowUs - out.nextFallUs) >= 0) {
       gpio_put(out.pin, 0);
       out.gateHigh = false;
       out.gateFalls++;
-
-      if (out.run == OUTPUT_RUN_LOOP) {
-        do {
-          out.nextRiseUs += out.periodUs;
-          if ((int64_t)(nowUs - out.nextRiseUs) >= 0) {
-            g_module.gateSchedulerMisses++;
-          }
-        } while ((int64_t)(nowUs - out.nextRiseUs) >= 0);
-
-        out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
-      }
-    }
-
-    if (out.run == OUTPUT_RUN_LOOP && !out.gateHigh && (int64_t)(nowUs - out.nextRiseUs) >= 0) {
-      if (sampleLoopRetrigger(out.loopProbPercent)) {
-        gpio_put(out.pin, 1);
-        out.gateHigh = true;
-        out.gateRises++;
-        out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
-      } else {
-        do {
-          out.nextRiseUs += out.periodUs;
-          if ((int64_t)(nowUs - out.nextRiseUs) >= 0) {
-            g_module.gateSchedulerMisses++;
-          }
-        } while ((int64_t)(nowUs - out.nextRiseUs) >= 0);
-
-        out.nextFallUs = out.nextRiseUs + GATE_PULSE_US;
-      }
     }
   }
 
