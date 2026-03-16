@@ -1,119 +1,119 @@
-# Certainty Firmware
+# Certainty
 
-Low-jitter clock + clock-synced modulation firmware for the Uncertainty module.
+Clock and clock-synced gate firmware for the Uncertainty module. Runs on the Seeeduino XIAO RP2040.
 
-## Features
-- Stable transport at default `90 BPM`.
-- 8 outputs with per-channel ratio, mode, and loop probability.
-- Clock synchronization: external clock follower with phase-lock.
-- Gate scheduler for trig edges.
-- PWM sample rate: `8 kHz`.
-- I2C follower interface for runtime control from Teletype.
+Eight outputs, each with a configurable ratio, mode, and loop probability. Controlled over I2C from Teletype or any I2C controller. MIDI clock + transport input via the CV jack.
 
-## Default Configuration
-- BPM: `90`
-- I2C address: `0x55` (`85`)
-- I2C pins: `SDA=GPIO6`, `SCL=GPIO7`
-- Input CV is ignored.
+---
 
-Default output layout (all trig loop):
-- OUT1: trig loop `/2`
-- OUT2: trig loop `/2`
-- OUT3: trig loop `1x`
-- OUT4: trig loop `1x`
-- OUT5: trig loop `2x`
-- OUT6: trig loop `2x`
-- OUT7: trig loop `4x`
-- OUT8: trig loop `4x`
+## Credits
 
-Default loop probability on all channels: `100%`.
+The MIDI clock phase-lock algorithm is adapted from Emilie Gillet's [Tides](https://github.com/pichenettes/eurorack) firmware (`tides2/ramp/ramp_extractor.cc`). The per-tick warp approach — computing expected phase from a tick counter and nudging output frequency to converge — is directly inspired by her work. Thanks Emilie.
 
-## Teletype Ops
+---
 
-Device address: `0x55` (`85`). All ops are write-only.
+## Modes
 
-| Op | Params | Description |
-|----|--------|-------------|
-| `CT.BPM bpm` | `bpm`: 20–320 | Set global BPM. Resets transport phase. |
-| `CT.RAT out num den` | `out`: 1–8, `num`/`den`: 1–255 | Set output ratio as a fraction. |
-| `CT.DIV out div` | `out`: 1–8, `div`: 1–255 | Convenience: set ratio to `1/div`. |
-| `CT.MUL out mul` | `out`: 1–8, `mul`: 1–255 | Convenience: set ratio to `mul/1`. |
-| `CT.MD.CLK out` | `out`: 1–8 | Set output to loop mode. |
-| `CT.MD.TR out` | `out`: 1–8 | Set output to one-shot mode. |
-| `CT.TR.P out` | `out`: 1–8 | Fire trigger on a one-shot output. |
-| `CT.PROB out prob` | `out`: 1–8, `prob`: 0–100 | Set loop fire probability (%). |
-| `CT.PPQN ppqn` | `ppqn`: 1–96 | Set clock PPQN (pulses per quarter-note). |
+### Internal clock
 
-Aliases: `CT.RATIO` = `CT.RAT`, `CT.MODE.CLK/TRIG` = `CT.MD.*`, `CT.PRB` = `CT.PROB`.
+At boot (or after MIDI disconnects), the module runs its own clock at `90 BPM`. All loop outputs fire at their configured ratio relative to the beat. Ratio and mode changes from I2C apply on the next beat boundary.
 
-Teletype examples:
-```text
-CT.BPM 120              # set BPM to 120
-CT.RAT 7 4 1            # out7 = 4/1
-CT.DIV 1 3              # out1 = 1/3
-CT.MUL 5 2              # out5 = 2/1
-CT.MD.CLK 2             # out2 = loop mode
-CT.MD.TR 3            # out3 = one-shot mode
-CT.TR.P 3                 # fire out3
-CT.PROB 4 70            # out4 loops at 70%
-CT.PPQN 24              # set clock to 24 PPQN (MIDI clock)
-CT.PPQN 1               # set clock to 1 PPQN (one pulse per beat)
+BPM can be set over I2C. The transport resets phase on BPM change.
+
+### MIDI clock
+
+Connect a MIDI source to the CV jack. The firmware decodes MIDI clock via a software UART running on Core 1 (ADC at 500kHz, DMA ring buffer).
+
+Once a MIDI clock stream is detected, the module locks to it. All loop outputs phase-lock immediately using a per-tick warp — each incoming 0xF8 nudges every output's frequency so its phase tracks the expected position derived from the tick count. There's no warm-up period; if clocks were running before you hit Play, outputs are phase-locked from the first beat.
+
+Transport behavior:
+- **Play (0xFA):** all outputs reset phase to zero and start from beat one.
+- **Stop (0xFC):** all gates go low immediately. Output 8 (MIDI reset mode) fires a 10ms pulse.
+- **Continue (0xFB):** resumes from the current tick position, no phase reset.
+
+If MIDI clocks stop arriving for more than 2 seconds, the module falls back to internal clock at the last known BPM.
+
+---
+
+## Default output layout
+
+| Output | Mode | Ratio |
+|--------|------|-------|
+| OUT1 | Loop | 1/2 |
+| OUT2 | Loop | 1/2 |
+| OUT3 | Loop | 1x |
+| OUT4 | Loop | 1x |
+| OUT5 | Loop | 2x |
+| OUT6 | Loop | 2x |
+| OUT7 | Loop | 4x |
+| OUT8 | MIDI reset | 4x (internal clock) |
+
+Default loop probability: 100% on all channels.
+
+### Output modes
+
+- **Loop:** fires a gate on each beat cycle at the configured ratio. Phase-locked to the global transport.
+- **One-shot:** fires a single 10ms gate pulse each time it's triggered via I2C. Ignores the transport.
+- **MIDI reset:** in internal clock mode, acts like loop at the configured ratio. In MIDI mode, skips phase accumulation and fires a single 10ms pulse on MIDI Stop (0xFC). Useful for resetting downstream CV sequencers that don't have MIDI input.
+
+---
+
+## I2C
+
+Device address: `0x55` (85). Write-only.
+
+| Cmd | Payload | Description |
+|-----|---------|-------------|
+| `0x00` | `[bpm_hi, bpm_lo]` or `[bpm8]` | Set BPM (20–320). Resets transport phase. |
+| `0x01` | `[out, num, den]` | Set output ratio. Applied on next beat boundary. |
+| `0x02` | `[out, run]` | Set output mode. `0`=one-shot, `1`=loop, `2`=MIDI reset. |
+| `0x04` | `[out]` or `[0xFF, mask]` | Fire trigger on one-shot output(s). Fires immediately. |
+| `0x05` | `[out, prob]` | Set loop fire probability (0–100%). |
+
+Output index is 1-indexed (`1..8`).
+
+---
+
+## Teletype ops
+
+| Op | Description |
+|----|-------------|
+| `CT.BPM bpm` | Set BPM (20–320). |
+| `CT.RAT out num den` | Set ratio as a fraction (`num/den`). |
+| `CT.DIV out div` | Shorthand: set ratio to `1/div`. |
+| `CT.MUL out mul` | Shorthand: set ratio to `mul/1`. |
+| `CT.MD.CLK out` | Set output to loop mode. |
+| `CT.MD.TR out` | Set output to one-shot mode. |
+| `CT.TR.P out` | Fire trigger on a one-shot output. |
+| `CT.PROB out prob` | Set loop fire probability (%). |
+
+Aliases: `CT.RATIO` = `CT.RAT`, `CT.MODE.CLK` = `CT.MD.CLK`, `CT.MODE.TRIG` = `CT.MD.TR`, `CT.PRB` = `CT.PROB`.
+
+```
+CT.BPM 120          // set BPM to 120
+CT.RAT 1 1 2        // out1 = half speed (1/2)
+CT.MUL 5 4          // out5 = 4x speed
+CT.DIV 3 3          // out3 = 1/3 speed
+CT.MD.TR 3          // out3 = one-shot mode
+CT.TR.P 3           // fire out3
+CT.MD.CLK 3         // out3 = loop mode
+CT.PROB 4 70        // out4 loops at 70% probability
 ```
 
-## I2C Raw Protocol
-
-Each message starts with a command byte. Device address: `0x55`.
-
-### `0x00` Set BPM
-- Payload: `[bpm_hi, bpm_lo]`
-- Range: `20..320`
-
-### `0x01` Set Ratio
-- Payload: `[out, num, den]`
-- `out`: `1..8`
-- `num`, `den`: `1..255`
-
-### `0x02` Set Mode
-- Payload: `[out, run]`
-- `run`: `0=one-shot`, `1=loop`
-
-Mode values:
-- `0` = one-shot (trig one-shot)
-- `1` = loop (trig loop)
-
-### `0x04` Trigger
-- Payload: `[out]`
-- `out`: `1..8`
-
-### `0x05` Set Loop Probability
-- Payload: `[out, prob]`
-- `prob`: `0..100`
-- Applies to loop channels; ignored on one-shot channels.
-
-### `0x06` Set Clock PPQN
-- Payload: `[ppqn]`
-- `ppqn`: `1..96`
-- Sets the expected clock resolution (pulses per quarter-note).
-- Common values: `1` (1PPQ), `4` (Eurorack clock), `24` (MIDI clock), `96` (MIDI high-res).
-- Changing PPQN while locked drops to re-detect state; re-locks on next 3 consistent pulses.
-
-Raw Teletype IIA/IIS examples:
-```text
+Raw IIA/IIS:
+```
 IIA 85
-IIS1 0 120           # BPM = 120 (single-byte shorthand)
-IISB3 1 7 4 1        # ratio: out7 = 4/1
-IISB2 2 2 1          # mode: out2 = loop (run=1)
-IISB1 4 3            # trigger out3
-IISB2 5 2 70         # probability: out2 = 70%
-IISB1 6 24           # PPQN: set to 24 (MIDI clock)
-IISB1 6 1            # PPQN: set to 1 (1PPQ)
+IIS1 0 120          // BPM = 120 (single byte)
+IISB3 1 3 1 2       // out3 ratio = 1/2
+IISB2 2 3 0         // out3 = one-shot
+IISB1 4 3           // trigger out3
+IISB2 5 4 70        // out4 probability = 70%
 ```
 
-## Timing Semantics
-- BPM change resets global transport phase.
-- Ratio and mode changes are committed on the next beat boundary.
-- Loop channels stay phase-locked to the global transport.
-- Trigger commands affect one-shot channels; loop channels run from transport.
-- PPQN change: if clock is locked, drops to detect state and re-locks on next 3 consistent pulses at the new PPQN resolution. If not locked, takes effect immediately.
+---
 
-Request/response is currently disabled (write-only follower behavior).
+## Hardware
+
+- **CV jack (GPIO26):** MIDI clock input. Connect any standard MIDI source via optocoupler or direct 3.3V-level signal.
+- **I2C (GPIO6/7):** SDA/SCL. Pulled up internally. Address `0x55`.
+- **Outputs (GPIO0–4, 27–29):** 3.3V gate outputs.

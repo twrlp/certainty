@@ -19,7 +19,7 @@ static const Ratio DEFAULT_RATIOS[NUM_OUTPUTS] = {
 
 static const OutputRun DEFAULT_RUNS[NUM_OUTPUTS] = {
     OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP,
-    OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP};
+    OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_LOOP, OUTPUT_RUN_MIDI_RESET};
 
 void appSetup() {
   Serial.begin(115200);
@@ -49,7 +49,8 @@ void appSetup() {
 
   applyBpmAndReset(DEFAULT_BPM);
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
-    if (g_module.outputs[i].run == OUTPUT_RUN_LOOP)
+    if (g_module.outputs[i].run == OUTPUT_RUN_LOOP ||
+        g_module.outputs[i].run == OUTPUT_RUN_MIDI_RESET)
       g_module.outputs[i].phase = 1.0f;
   }
 

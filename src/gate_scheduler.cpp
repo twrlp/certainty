@@ -24,7 +24,8 @@ void scheduleNextAlarmLocked() {
     if (out.gateHigh && out.nextFallUs < nextDueUs) {
       nextDueUs = out.nextFallUs;
     }
-    if (!out.gateHigh && out.run == OUTPUT_RUN_ONE_SHOT &&
+    if (!out.gateHigh &&
+        (out.run == OUTPUT_RUN_ONE_SHOT || out.run == OUTPUT_RUN_MIDI_RESET) &&
         out.pendingTriggerCount > 0) {
       nextDueUs = nowUs;
     }
@@ -73,8 +74,9 @@ int64_t gateAlarmCallback(alarm_id_t id, void *user_data) {
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
 
-    // One-shot rise
-    if (!out.gateHigh && out.run == OUTPUT_RUN_ONE_SHOT &&
+    // One-shot / MIDI-reset rise
+    if (!out.gateHigh &&
+        (out.run == OUTPUT_RUN_ONE_SHOT || out.run == OUTPUT_RUN_MIDI_RESET) &&
         out.pendingTriggerCount > 0) {
       gpio_put(out.pin, 1);
       out.gateHigh   = true;

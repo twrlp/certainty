@@ -81,7 +81,8 @@ void applyI2cEvent(const I2cEvent &event, uint64_t nowUs) {
       const uint8_t outIndex = event.out;
       const OutputRun run = (OutputRun)event.b;
       if (outIndex >= NUM_OUTPUTS ||
-          (run != OUTPUT_RUN_ONE_SHOT && run != OUTPUT_RUN_LOOP)) {
+          (run != OUTPUT_RUN_ONE_SHOT && run != OUTPUT_RUN_LOOP &&
+           run != OUTPUT_RUN_MIDI_RESET)) {
         g_module.i2cErrorCount++;
         break;
       }

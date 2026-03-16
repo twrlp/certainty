@@ -7,8 +7,9 @@
 namespace certainty {
 
 enum OutputRun : uint8_t {
-  OUTPUT_RUN_ONE_SHOT = 0,
-  OUTPUT_RUN_LOOP = 1,
+  OUTPUT_RUN_ONE_SHOT   = 0,
+  OUTPUT_RUN_LOOP       = 1,
+  OUTPUT_RUN_MIDI_RESET = 2,  // internal clock: acts as LOOP; MIDI locked: fires 10ms pulse on Stop (0xFC)
 };
 
 struct Ratio {

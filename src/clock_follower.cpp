@@ -120,16 +120,20 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
       // keeps the warp reference aligned with the MIDI source and prevents permanent
       // phase drift accumulation. Uses pre-IIR smoothed period as reference to avoid
       // false positives being masked by the IIR already absorbing the long interval.
-      {
-        uint32_t ticks = 1;
-        if (prevSmoothedUs > 0.0f && tickInterval > 0) {
-          const float ratio = float(tickInterval) / prevSmoothedUs;
-          if (ratio >= 1.5f) ticks = 2;
-          if (ratio >= 2.5f) ticks = 3;
-        }
-        midi.clockCount += ticks;
+      uint32_t ticks = 1;
+      if (prevSmoothedUs > 0.0f && tickInterval > 0) {
+        const float ratio = float(tickInterval) / prevSmoothedUs;
+        if (ratio >= 1.5f) ticks = 2;
+        if (ratio >= 2.5f) ticks = 3;
+        if (ratio >= 3.5f) ticks = 4;
       }
-      const bool isBeatBoundary = (midi.clockCount % MIDI_RT_PPQN == 0);
+      const uint32_t prevCount = midi.clockCount;
+      midi.clockCount += ticks;
+      // Check for beat boundary crossing using pre-increment remainder.
+      // A post-increment modulo check would miss the boundary when ticks > 1
+      // causes clockCount to jump over a multiple of MIDI_RT_PPQN.
+      const bool isBeatBoundary =
+          (prevCount % MIDI_RT_PPQN) + ticks >= MIDI_RT_PPQN;
       if (isBeatBoundary) {
         midi.beatCount++;
         midi.dbgBeatBoundaries++;
@@ -206,6 +210,13 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
           out.gateHigh = false;
         }
       }
+      // Queue a reset pulse on any MIDI_RESET outputs.
+      for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
+        if (g_module.outputs[i].run == OUTPUT_RUN_MIDI_RESET) {
+          g_module.outputs[i].pendingTriggerCount++;
+        }
+      }
+      rescheduleGateAlarmLocked();
       break;
     }
   }
@@ -235,9 +246,12 @@ bool mainCallback(repeating_timer *rt) {
   bool needsReschedule = false;
   const uint32_t irq = save_and_disable_interrupts();
   if (playing) {
+    const ClockFollowerState &cfLoop = g_module.clockFollower;
     for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
       OutputState &out = g_module.outputs[i];
-      if (out.run != OUTPUT_RUN_LOOP) continue;
+      const bool isLoopLike = (out.run == OUTPUT_RUN_LOOP) ||
+          (out.run == OUTPUT_RUN_MIDI_RESET && cfLoop.mode == CLK_FOLLOW_INACTIVE);
+      if (!isLoopLike) continue;
       if (out.freq <= 0.0f) continue;
       out.phase += out.freq;
       if (out.phase >= 1.0f) {
@@ -283,7 +297,7 @@ bool mainCallback(repeating_timer *rt) {
       applyBpmAndReset(g_module.clockFollower.fallbackBpm);
       for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
         OutputState &out = g_module.outputs[i];
-        if (out.run == OUTPUT_RUN_LOOP) out.phase = 1.0f;
+        if (out.run == OUTPUT_RUN_LOOP || out.run == OUTPUT_RUN_MIDI_RESET) out.phase = 1.0f;
       }
       restore_interrupts(irq2);
     }

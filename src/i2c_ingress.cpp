@@ -11,16 +11,10 @@
 
 namespace certainty {
 
-// Accepts both 1-indexed (outRaw 1..NUM_OUTPUTS) and 0-indexed (outRaw 0..NUM_OUTPUTS-1)
-// callers. Both branches map to the same output[0..NUM_OUTPUTS-1] index. The second branch
-// is only reachable when outRaw == 0, since values ≥ 1 are consumed by the first branch.
+// 1-indexed: outRaw 1..NUM_OUTPUTS maps to internal output[0..NUM_OUTPUTS-1].
 static bool decodeOutIndex(uint8_t outRaw, uint8_t *outIndex) {
   if (outRaw >= 1 && outRaw <= NUM_OUTPUTS) {
-    *outIndex = (uint8_t)(outRaw - 1);
-    return true;
-  }
-  if (outRaw < NUM_OUTPUTS) {
-    *outIndex = outRaw;
+    *outIndex = outRaw - 1;
     return true;
   }
   return false;
@@ -85,7 +79,7 @@ static bool decodeI2cEvent(const uint8_t *raw, uint8_t len, I2cEvent *event) {
       return false;
     }
     const uint8_t runRaw = raw[2];
-    if (runRaw > (uint8_t)OUTPUT_RUN_LOOP) {
+    if (runRaw > (uint8_t)OUTPUT_RUN_MIDI_RESET) {
       return false;
     }
     event->type  = I2C_EVENT_SET_MODE;
