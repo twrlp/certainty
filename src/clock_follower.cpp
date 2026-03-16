@@ -98,6 +98,10 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
           midi.smoothedPeriodUs += 0.25f * (iv - midi.smoothedPeriodUs);
         }
         applyBeatPeriodLocked((uint64_t)(midi.smoothedPeriodUs * (float)MIDI_RT_PPQN), nowUs);
+        // Transition to locked as soon as a valid clock source is detected,
+        // even before Play is received. This stops MIDI_RESET from looping
+        // immediately when a clock is connected, rather than waiting for 0xFA.
+        if (cf.mode == CLK_FOLLOW_INACTIVE) cf.mode = CLK_FOLLOW_LOCKED;
       }
       midi.lastClockUs = nowUs;
 
