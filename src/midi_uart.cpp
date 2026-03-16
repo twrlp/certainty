@@ -68,6 +68,7 @@ void initMidiDma() {
   g_module.midiUart.dbgFalseStarts = 0;
   g_module.midiUart.dbgStopFails = 0;
   g_module.midiUart.dbgByteFails = 0;
+  g_module.midiUart.dbgNonRtByte = 0;
   g_module.midiUart.dbgBytesDecoded = 0;
   g_module.midiUart.dbgRtClock = 0;
   g_module.midiUart.dbgRtStart = 0;
@@ -76,6 +77,16 @@ void initMidiDma() {
   g_module.midiUart.dbgRtActiveSense = 0;
   g_module.midiUart.adcThreshold = MIDI_ADC_THRESHOLD;
   g_module.midiUart.adcStartThreshold = MIDI_ADC_THRESHOLD;
+  g_module.midiUart.adcWinMin = 0xFF;
+  g_module.midiUart.adcWinMax = 0x00;
+  g_module.midiUart.adcSampleCount = 0;
+  g_module.midiUart.startDebounceCount = 0;
+  g_module.midiUart.prevStartLow = false;
+  g_module.midiUart.vote1Raw = 0;
+  g_module.midiUart.dbgSlopeAssists = 0;
+  g_module.midiUart.dbgLastSlope = 0;
+  g_module.midiUart.dbgLastSlopeAssistBit = 0;
+  g_module.midiUart.dbgLastSlopeExtrap = 0;
   g_module.midiUart.msgHead = 0;
   g_module.midiUart.msgTail = 0;
   g_module.midiUart.dbgMsgDrops = 0;
@@ -106,6 +117,27 @@ void processMidiAdcSamples() {
     uart.readIdx = (uart.readIdx + 1) & (MIDI_ADC_BUF_SIZE - 1);
     if (sample < uart.dbgAdcMin) uart.dbgAdcMin = sample;
     if (sample > uart.dbgAdcMax) uart.dbgAdcMax = sample;
+
+    // Threshold adaptation — runs entirely on Core 1, no cross-core writes.
+    // Update every 250,000 samples (~500ms at 500kHz ADC rate).
+    if (sample < uart.adcWinMin) uart.adcWinMin = sample;
+    if (sample > uart.adcWinMax) uart.adcWinMax = sample;
+    if (++uart.adcSampleCount >= 250000) {
+      const uint16_t range = uart.adcWinMax >= uart.adcWinMin
+          ? uint16_t(uart.adcWinMax) - uint16_t(uart.adcWinMin) : 0;
+      if (range >= 50) {
+        uart.adcThreshold = uint8_t(uint16_t(uart.adcWinMin) +
+            (uint16_t(uart.adcWinMax) - uint16_t(uart.adcWinMin)) * MIDI_ADC_THRESHOLD_PCT / 100);
+        uart.adcStartThreshold = uint8_t(uint16_t(uart.adcWinMax) - range / 4);
+      } else {
+        uart.adcThreshold = MIDI_ADC_THRESHOLD;
+        uart.adcStartThreshold = MIDI_ADC_THRESHOLD;
+      }
+      uart.adcWinMin = 0xFF;
+      uart.adcWinMax = 0x00;
+      uart.adcSampleCount = 0;
+    }
+
     const bool mark = (sample >= uart.adcThreshold);
     const bool startLow = (sample < uart.adcStartThreshold);
     if (!mark && uart.phase != MIDI_UART_IDLE) {
@@ -116,10 +148,18 @@ void processMidiAdcSamples() {
       case MIDI_UART_IDLE:
         if (uart.errorGuardCount > 0) {
           if (mark) uart.errorGuardCount--;  // count down only while line is idle (mark)
-        } else if (startLow) {  // start bit falling edge (early threshold)
-          uart.phase = MIDI_UART_START_VERIFY;
-          uart.sampleCount = 0;
-          uart.dbgStartBits++;
+        } else if (startLow && !uart.prevStartLow) {  // falling edge detected
+          uart.startDebounceCount = 1;
+        } else if (startLow && uart.startDebounceCount > 0) {
+          uart.startDebounceCount++;
+          if (uart.startDebounceCount >= MIDI_START_DEBOUNCE) {
+            uart.phase = MIDI_UART_START_VERIFY;
+            uart.sampleCount = MIDI_START_DEBOUNCE - 1;  // compensate: debounce already consumed N samples of start bit
+            uart.dbgStartBits++;
+            uart.startDebounceCount = 0;
+          }
+        } else {
+          uart.startDebounceCount = 0;  // line went high, reset
         }
         break;
 
@@ -150,9 +190,26 @@ void processMidiAdcSamples() {
             posInBit == MIDI_SAMPLES_PER_BIT / 2 ||
             posInBit == 3 * MIDI_SAMPLES_PER_BIT / 4) {
           if (mark) uart.bitVoteMarkCount++;
+          if (posInBit == MIDI_SAMPLES_PER_BIT / 4) {
+            uart.vote1Raw = sample;  // save v1 for slope assist at deciding vote
+          }
           if (posInBit == 3 * MIDI_SAMPLES_PER_BIT / 4) {  // last vote: decide bit
             uart.dbgBitSamples[uart.bitIndex] = sample;
-            if (uart.bitVoteMarkCount >= 2) uart.byte |= (1u << uart.bitIndex);
+            bool bitIsMark = (uart.bitVoteMarkCount >= 2);
+            if (!bitIsMark && sample >= uart.vote1Raw) {
+              // Slope assist: project v3 forward by SPB/4 samples.
+              // slope = v3 - v1 over SPB/2 (8 samples); extrap = v3 + slope/2
+              const uint8_t slope = sample - uart.vote1Raw;
+              const uint16_t vExtrap = uint16_t(sample) + slope / 2;
+              if (slope >= MIDI_SLOPE_MIN && vExtrap >= uart.adcThreshold) {
+                bitIsMark = true;
+                uart.dbgSlopeAssists++;
+                uart.dbgLastSlope = slope;
+                uart.dbgLastSlopeAssistBit = uart.bitIndex;
+                uart.dbgLastSlopeExtrap = vExtrap > 255 ? 255 : (uint8_t)vExtrap;
+              }
+            }
+            if (bitIsMark) uart.byte |= (1u << uart.bitIndex);
             uart.bitVoteMarkCount = 0;
             uart.bitIndex++;
             if (uart.bitIndex == 8) {
@@ -171,8 +228,11 @@ void processMidiAdcSamples() {
           if (!mark) {
             uart.dbgStopFails++;
             uart.errorGuardCount = MIDI_SAMPLES_PER_BIT;  // require idle line before next start
-          } else if (uart.byte < 0xF8) {
-            uart.dbgByteFails++;
+          } else if (uart.byte >= 0xF0 && uart.byte < 0xF8) {
+            uart.dbgNonRtByte++;  // valid non-RT system message (SysEx, MTC, etc.) — ignored by design
+          } else if (uart.byte < 0xF0) {
+            uart.dbgByteFails++;  // byte < 0xF0: likely bit error in an RT message
+            uart.errorGuardCount = MIDI_SAMPLES_PER_BIT;  // prevent cascading spurious starts
           } else {
             uart.dbgBytesDecoded++;
             uart.dbgLastByte = uart.byte;
@@ -189,7 +249,7 @@ void processMidiAdcSamples() {
               const uint8_t next = (uart.msgHead + 1u) & 0x0Fu;
               if (next != uart.msgTail) {
                 uart.msgBuf[uart.msgHead]     = uart.byte;
-                uart.msgTimeBuf[uart.msgHead] = (uint32_t)time_us_64();
+                uart.msgTimeBuf[uart.msgHead] = time_us_64();
                 __dmb();  // ensure byte and timestamp are visible before head advances
                 uart.msgHead = next;
               }
@@ -200,6 +260,7 @@ void processMidiAdcSamples() {
         }
         break;
     }
+    uart.prevStartLow = startLow;
   }
 }
 
@@ -213,13 +274,9 @@ void drainMidiMessages(uint64_t nowUs) {
   MidiUartState &uart = g_module.midiUart;
   while (uart.msgHead != uart.msgTail) {
     const uint8_t  byte  = uart.msgBuf[uart.msgTail];
-    const uint32_t tsLo  = uart.msgTimeBuf[uart.msgTail];
+    const uint64_t msgUs = uart.msgTimeBuf[uart.msgTail];
     __dmb();  // ensure reads complete before tail advances
     uart.msgTail = (uart.msgTail + 1u) & 0x0Fu;
-    // Reconstruct full 64-bit timestamp from stored low 32 bits + current high 32 bits.
-    // Subtract 2^32 if the stored value appears ahead of nowUs (32-bit wrap since decode).
-    uint64_t msgUs = (nowUs & 0xFFFFFFFF00000000ULL) | (uint64_t)tsLo;
-    if (msgUs > nowUs) msgUs -= 0x100000000ULL;
     onMidiMessage(byte, msgUs);
   }
 }

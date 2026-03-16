@@ -36,5 +36,8 @@ static const uint32_t MIDI_ADC_BUF_SIZE     = (1u << MIDI_ADC_BUF_LOG2);
 static const uint16_t MIDI_ADC_CLKDIV       = 0;      // CLKDIV=0 → no extra division; ADC takes 96 cycles at 48MHz → 500kHz
 static const uint8_t  MIDI_SAMPLES_PER_BIT  = 16;    // 500kHz / 31250 baud
 static const uint8_t  MIDI_RT_PPQN          = 24;    // MIDI Real-Time clock pulses per quarter note
+static const uint8_t  MIDI_START_DEBOUNCE    = 3;     // consecutive low samples to confirm start bit
+static const uint8_t  MIDI_ADC_THRESHOLD_PCT = 50;   // mark/space threshold as % of ADC range (0=min, 100=max)
+static const uint8_t  MIDI_SLOPE_MIN         = 8;    // min (v3-v1) over 8 samples to qualify as slow-rising MARK
 
 }  // namespace certainty

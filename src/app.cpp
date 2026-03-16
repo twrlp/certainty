@@ -48,6 +48,10 @@ void appSetup() {
   }
 
   applyBpmAndReset(DEFAULT_BPM);
+  for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
+    if (g_module.outputs[i].run == OUTPUT_RUN_LOOP)
+      g_module.outputs[i].phase = 1.0f;
+  }
 
   initMidiClock();
   if (ENABLE_MIDI_CLOCK) {
@@ -76,40 +80,36 @@ void appLoop() {
   if (ENABLE_MIDI_CLOCK && (now - lastMidiPrintMs >= 500)) {
     lastMidiPrintMs = now;
     MidiUartState &uart = g_module.midiUart;
-    const uint16_t mid = (uint16_t(uart.dbgAdcMin) + uint16_t(uart.dbgAdcMax)) / 2;
-    uint8_t startThr = uart.adcStartThreshold;
-    if (uart.dbgAdcMax >= uart.dbgAdcMin) {
-      const uint16_t range = uint16_t(uart.dbgAdcMax) - uint16_t(uart.dbgAdcMin);
-      startThr = uint8_t(uint16_t(uart.dbgAdcMax) - (range / 4));  // ~75% of range
-    }
-    Serial.print("adc="); Serial.print(uart.dbgAdcMin); Serial.print(".."); Serial.print(uart.dbgAdcMax);
-    Serial.print(" low="); Serial.print(uart.dbgAdcAtLow);
-    Serial.print(" thr="); Serial.print(uart.adcThreshold);
-    Serial.print(" sthr="); Serial.print(startThr);
-    Serial.print(" mid="); Serial.print(mid);
-    Serial.print(" starts="); Serial.print(uart.dbgStartBits);
-    Serial.print(" false="); Serial.print(uart.dbgFalseStarts);
-    Serial.print(" stopFail="); Serial.print(uart.dbgStopFails);
-    Serial.print(" byteFail="); Serial.print(uart.dbgByteFails);
-    Serial.print(" ok="); Serial.print(uart.dbgBytesDecoded);
-    Serial.print(" rtF8="); Serial.print(uart.dbgRtClock);
-    Serial.print(" rtFA="); Serial.print(uart.dbgRtStart);
-    Serial.print(" rtFB="); Serial.print(uart.dbgRtContinue);
-    Serial.print(" rtFC="); Serial.print(uart.dbgRtStop);
-    Serial.print(" rtFE="); Serial.print(uart.dbgRtActiveSense);
-    Serial.print(" ss="); Serial.print(uart.dbgStartSample);
-    Serial.print(" ts="); Serial.print(uart.dbgStopSample);
-    Serial.print(" bits=");
-    for (uint8_t i = 0; i < 8; ++i) {
-      if (i) Serial.print(",");
-      Serial.print(uart.dbgBitSamples[i]);
-    }
-    Serial.print(" drops="); Serial.print(uart.dbgMsgDrops);
-    Serial.print(" clocks="); Serial.print(g_module.midi.totalClocks);
-    Serial.print(" last=0x"); Serial.print(uart.dbgLastByte, HEX);
-    Serial.print(" "); Serial.println(g_module.midi.playState == MIDI_PLAYING ? "PLAY" : "STOP");
-    uart.adcThreshold = (uint8_t)mid;
-    uart.adcStartThreshold = startThr;
+
+    // Snapshot all volatile counters atomically (relative to each other) to avoid
+    // race where Core 1 increments between read and reset.
+    const uint8_t  sAdcMin       = uart.dbgAdcMin;
+    const uint8_t  sAdcMax       = uart.dbgAdcMax;
+    const uint8_t  sAdcAtLow     = uart.dbgAdcAtLow;
+    const uint32_t sStartBits    = uart.dbgStartBits;
+    const uint32_t sFalseStarts  = uart.dbgFalseStarts;
+    const uint32_t sStopFails    = uart.dbgStopFails;
+    const uint32_t sByteFails    = uart.dbgByteFails;
+    const uint32_t sNonRtByte    = uart.dbgNonRtByte;
+    const uint32_t sBytesDecoded = uart.dbgBytesDecoded;
+    const uint32_t sRtClock      = uart.dbgRtClock;
+    const uint32_t sRtStart      = uart.dbgRtStart;
+    const uint32_t sRtContinue   = uart.dbgRtContinue;
+    const uint32_t sRtStop       = uart.dbgRtStop;
+    const uint32_t sRtActiveSense = uart.dbgRtActiveSense;
+    const uint32_t sMsgDrops     = uart.dbgMsgDrops;
+    const uint32_t sSlopeAssists = uart.dbgSlopeAssists;
+    const uint8_t  sStartSample  = uart.dbgStartSample;
+    const uint8_t  sStopSample   = uart.dbgStopSample;
+    uint8_t sBitSamples[8];
+    for (uint8_t i = 0; i < 8; ++i) sBitSamples[i] = uart.dbgBitSamples[i];
+    const uint8_t  sLastSlope     = uart.dbgLastSlope;
+    const uint8_t  sLastSlopeBit  = uart.dbgLastSlopeAssistBit;
+    const uint8_t  sLastSlopeExt  = uart.dbgLastSlopeExtrap;
+    const uint8_t  sLastByte      = uart.dbgLastByte;
+    const uint32_t sBeatBoundaries = g_module.midi.dbgBeatBoundaries;
+
+    // Reset counters immediately after snapshot
     uart.dbgAdcMin = 0xFF;
     uart.dbgAdcMax = 0x00;
     uart.dbgAdcAtLow = 0xFF;
@@ -117,6 +117,7 @@ void appLoop() {
     uart.dbgFalseStarts = 0;
     uart.dbgStopFails = 0;
     uart.dbgByteFails = 0;
+    uart.dbgNonRtByte = 0;
     uart.dbgBytesDecoded = 0;
     uart.dbgRtClock = 0;
     uart.dbgRtStart = 0;
@@ -124,6 +125,61 @@ void appLoop() {
     uart.dbgRtStop = 0;
     uart.dbgRtActiveSense = 0;
     uart.dbgMsgDrops = 0;
+    uart.dbgSlopeAssists = 0;
+    g_module.midi.dbgBeatBoundaries = 0;
+
+    const uint16_t mid = (uint16_t(sAdcMin) + uint16_t(sAdcMax)) / 2;
+    Serial.print("adc="); Serial.print(sAdcMin); Serial.print(".."); Serial.print(sAdcMax);
+    Serial.print(" low="); Serial.print(sAdcAtLow);
+    Serial.print(" thr="); Serial.print(uart.adcThreshold);
+    Serial.print(" sthr="); Serial.print(uart.adcStartThreshold);
+    Serial.print(" mid="); Serial.print(mid);
+    Serial.print(" starts="); Serial.print(sStartBits);
+    Serial.print(" false="); Serial.print(sFalseStarts);
+    Serial.print(" stopFail="); Serial.print(sStopFails);
+    Serial.print(" byteFail="); Serial.print(sByteFails);
+    Serial.print(" nonRt="); Serial.print(sNonRtByte);
+    Serial.print(" ok="); Serial.print(sBytesDecoded);
+    Serial.print(" rtF8="); Serial.print(sRtClock);
+    Serial.print(" rtFA="); Serial.print(sRtStart);
+    Serial.print(" rtFB="); Serial.print(sRtContinue);
+    Serial.print(" rtFC="); Serial.print(sRtStop);
+    Serial.print(" rtFE="); Serial.print(sRtActiveSense);
+    Serial.print(" ss="); Serial.print(sStartSample);
+    Serial.print(" ts="); Serial.print(sStopSample);
+    Serial.print(" bits=");
+    for (uint8_t i = 0; i < 8; ++i) {
+      if (i) Serial.print(",");
+      Serial.print(sBitSamples[i]);
+    }
+    Serial.print(" sa="); Serial.print(sSlopeAssists);
+    Serial.print(" slo="); Serial.print(sLastSlope);
+    Serial.print(" sabit="); Serial.print(sLastSlopeBit);
+    Serial.print(" ext="); Serial.print(sLastSlopeExt);
+    Serial.print(" drops="); Serial.print(sMsgDrops);
+    Serial.print(" clocks="); Serial.print(g_module.midi.totalClocks);
+    Serial.print(" last=0x"); Serial.print(sLastByte, HEX);
+    {
+      const MidiClockState &midi = g_module.midi;
+      const uint64_t beatPeriodUs = (uint64_t)(midi.smoothedPeriodUs * (float)MIDI_RT_PPQN);
+      const uint32_t bpm = beatPeriodUs > 0
+          ? (uint32_t)(60000000ULL / beatPeriodUs) : 0;
+      Serial.print(" bpm="); Serial.print(bpm);
+      Serial.print(" bcnt="); Serial.print((uint32_t)midi.beatCount);
+      Serial.print(" bdry="); Serial.print(sBeatBoundaries);
+      // Phase-drift diagnostics
+      Serial.print(" smth="); Serial.print((int32_t)midi.smoothedPeriodUs);
+      Serial.print(" raw="); Serial.print(midi.dbgLastRawInterval);
+      Serial.print(" ph0="); Serial.print(midi.dbgPhaseAtBeat, 4);
+      Serial.print(" tks="); Serial.print(midi.dbgTicksBetweenBeats);
+      Serial.print(" tFA="); Serial.print(midi.totalStarts);
+      Serial.print(" tFC="); Serial.print(midi.totalStops);
+      Serial.print(" tTO="); Serial.print(midi.totalTimeouts);
+      Serial.print(" stp="); Serial.print(midi.dbgStopSource);
+      Serial.print(" togMs="); Serial.print(midi.dbgTimeoutGapMs);
+      Serial.print(" maxG="); Serial.print(midi.dbgMaxClockGapUs);
+    }
+    Serial.print(" "); Serial.println(g_module.midi.playState == MIDI_PLAYING ? "PLAY" : "STOP");
   }
   if (ENABLE_I2C_BPM && !g_module.i2cEnabled && (now - lastI2cRetryMs >= I2C_RETRY_MS)) {
     lastI2cRetryMs = now;

@@ -145,10 +145,12 @@ void processDueConfigChanges(uint64_t nowUs) {
       // with any other output already running at the same ratio.
       const ClockFollowerState &cf = g_module.clockFollower;
       if (cf.mode == CLK_FOLLOW_LOCKED) {
-        // Use absolute edge count — anchorUs tracks PPQN edges, not beat boundaries.
-        const uint64_t beatCount = cf.inputEdgeCount / MIDI_RT_PPQN;
-        out.phase = float((beatCount * (uint64_t)out.ratio.num) % out.ratio.den)
-                    / float(out.ratio.den);
+        // Snap phase to clockCount reference — matches the warp formula exactly,
+        // so err≈0 immediately and the new output is coherent with all others.
+        out.phase = fmodf(
+            float(g_module.midi.clockCount) * float(out.ratio.num) /
+            (float(MIDI_RT_PPQN) * float(out.ratio.den)),
+            1.0f);
       } else {
         const uint64_t beatUs   = g_module.transport.beatPeriodUs;
         const uint64_t anchorUs = g_module.transport.anchorUs;
