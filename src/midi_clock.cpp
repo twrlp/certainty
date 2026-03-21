@@ -1,15 +1,11 @@
-#include "clock_follower.h"
+#include "midi_clock.h"
 
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
 
-#include "commands.h"
-#include "i2c_ingress.h"
-#include "midi_uart.h"
 #include "module_state.h"
 #include "config.h"
 #include "gate_scheduler.h"
-#include "rng.h"
 #include "transport.h"
 
 namespace certainty {
@@ -23,6 +19,11 @@ static void applyBeatPeriodLocked(uint64_t beatPeriodUs, uint64_t nowUs) {
   g_module.transport.bpm = clampBpm((uint32_t)(60000000ull / beatPeriodUs));
   g_module.transport.anchorUs = nowUs;
   // beatAnchorUs is updated in onMidiMessage when isBeatBoundary fires.
+
+  // Reset master frequency to base tempo. The MIDI warp (applied after this
+  // function returns in the 0xF8 handler) multiplies by (1 + err) to correct.
+  // Resetting here prevents warp compounding across clock ticks.
+  g_module.transport.masterFreq = 1.0f / beatPeriodTicks;
 
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
@@ -82,6 +83,9 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
         if (midi.smoothedPeriodUs > 0.0f && interval > (uint64_t)(midi.smoothedPeriodUs * 4.0f)) {
           midi.smoothedPeriodUs = 0.0f;
           midi.clockCount = 0;
+          // Sync master to the reset clockCount so warp starts clean.
+          g_module.transport.masterPhase     = 0.0f;
+          g_module.transport.masterBeatCount = 0;
           midi.lastClockUs = nowUs;
           break;
         }
@@ -111,6 +115,9 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
         midi.startPending = false;
         midi.clockCount   = 0;
         midi.beatCount    = 0;
+        // Sync master to beat origin so derived phases start clean.
+        g_module.transport.masterPhase     = 0.0f;
+        g_module.transport.masterBeatCount = 0;
         for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
           OutputState &out = g_module.outputs[i];
           if (out.run == OUTPUT_RUN_LOOP) out.phase = 1.0f;
@@ -147,29 +154,23 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
         midi.dbgLastBeatTick = midi.dbgTickCounter;
       }
 
-      // Per-tick phase warp (tides2-style) — only during PLAY.
-      // On each clock, compute each output's expected normalized phase from
-      // clockCount and nudge its frequency so it converges. This keeps all
-      // outputs collectively in phase and handles dropped clocks automatically:
-      // a missed tick means expected advances without a matching phase increment,
-      // so warp > 1 and the output speeds up to compensate.
+      // Master phase warp — only during PLAY.
+      // On each clock, compute the master's expected beat-phase from clockCount
+      // and nudge masterFreq so it converges. All outputs derive from the master,
+      // so a single warp keeps everything aligned. Dropped clocks are handled
+      // automatically: clockCount advances without matching master phase, so
+      // warp > 1 and the master speeds up to compensate.
       if (midi.playState == MIDI_PLAYING) {
-        for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
-          OutputState &out = g_module.outputs[i];
-          if (out.run != OUTPUT_RUN_LOOP) continue;
-
-          const float expected = fmodf(
-              float(midi.clockCount) * float(out.ratio.num) /
-              (float(MIDI_RT_PPQN) * float(out.ratio.den)),
-              1.0f);
-
-          float err = expected - out.phase;
-          if (err >  0.5f) err -= 1.0f;  // wrap to [-0.5, 0.5]
-          if (err < -0.5f) err += 1.0f;
-
-          // warp ∈ [0.5, 1.5] — safe, converges within a few ticks
-          out.freq *= (1.0f + err);
-        }
+        TransportState &tr = g_module.transport;
+        const float expectedMasterPhase =
+            float(midi.clockCount % MIDI_RT_PPQN) / float(MIDI_RT_PPQN);
+        float err = expectedMasterPhase - tr.masterPhase;
+        if (err >  0.5f) err -= 1.0f;  // wrap to [-0.5, 0.5]
+        if (err < -0.5f) err += 1.0f;
+        // warp ∈ [0.5, 1.5] — safe, converges within a few ticks.
+        // applyBeatPeriodLocked (called earlier in this handler) already
+        // reset masterFreq to the base tempo, so this is not compounding.
+        tr.masterFreq *= (1.0f + err);
       }
       break;
     }
@@ -186,6 +187,9 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
       // frequencies lock immediately via smth*PPQN on first post-Start clock.
       midi.beatCount          = 0;
       cf.mode = CLK_FOLLOW_LOCKED;
+      // Reset master to beat origin. masterFreq preserved (current tempo).
+      g_module.transport.masterPhase     = 0.0f;
+      g_module.transport.masterBeatCount = 0;
       for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
         OutputState &out = g_module.outputs[i];
         out.phase = 0.0f;
@@ -225,128 +229,5 @@ void onMidiMessage(uint8_t msg, uint64_t nowUs) {
     }
   }
 }
-
-bool mainCallback(repeating_timer *rt) {
-  (void)rt;
-  const uint64_t nowUs = time_us_64();
-  g_module.midi.dbgTickCounter++;
-
-  // 1. Decoded MIDI bytes from Core 1 SPSC ring buffer
-  if (ENABLE_MIDI_CLOCK) {
-    drainMidiMessages(nowUs);
-  }
-
-  // 2. I2C events and scheduled config changes
-  if (ENABLE_I2C_BPM) {
-    processI2cEvents(nowUs);
-    processDueConfigChanges(nowUs);
-  }
-
-  // 3. Phase accumulation and gate firing (only while playing, or in master clock mode)
-  const bool playing = !ENABLE_MIDI_CLOCK ||
-      g_module.midi.playState == MIDI_PLAYING ||
-      g_module.clockFollower.mode == CLK_FOLLOW_INACTIVE;
-
-  bool needsReschedule = false;
-  // Phase computation runs without disabling interrupts — mainCallback and
-  // gateAlarmCallback share TIMER_IRQ_3 (non-reentrant), and the I2C ISR
-  // only touches the ring buffer, not phase/gate state.  Keeping interrupts
-  // enabled here avoids blocking I2C reception during the fmodf-heavy loop.
-  if (playing) {
-    const ClockFollowerState &cfLoop = g_module.clockFollower;
-    const bool isInternal = cfLoop.mode == CLK_FOLLOW_INACTIVE;
-    TransportState &tr = g_module.transport;
-
-    // Advance master phase once per tick (internal mode only).
-    if (isInternal && tr.masterFreq > 0.0f) {
-      tr.masterPhase += tr.masterFreq;
-      if (tr.masterPhase >= 1.0f) {
-        tr.masterPhase -= 1.0f;
-        tr.masterBeatCount++;
-      }
-    }
-
-    for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
-      OutputState &out = g_module.outputs[i];
-      const bool isLoopLike = (out.run == OUTPUT_RUN_LOOP) ||
-          (out.run == OUTPUT_RUN_MIDI_RESET && isInternal);
-      if (!isLoopLike) continue;
-
-      bool fired = false;
-
-      if (isInternal) {
-        // Derive phase from shared master accumulator.
-        // beatPos spans [0, den) over den consecutive beats, ensuring
-        // sub-beat ratios (e.g. 1/2) wrap correctly at their true cycle
-        // boundary, not at every beat boundary.
-        if (tr.masterFreq <= 0.0f) continue;
-        const float beatPos =
-            float(tr.masterBeatCount % out.ratio.den) + tr.masterPhase;
-        const float newPhase = fmodf(
-            beatPos * float(out.ratio.num) / float(out.ratio.den), 1.0f);
-        fired = (newPhase < out.phase);
-        out.phase = newPhase;
-      } else {
-        // MIDI mode: per-output accumulation (warp handles drift).
-        if (out.freq <= 0.0f) continue;
-        out.phase += out.freq;
-        if (out.phase >= 1.0f) {
-          out.phase -= 1.0f;
-          if (out.phase >= 1.0f) out.phase = fmodf(out.phase, 1.0f);
-          fired = true;
-        }
-      }
-
-      if (fired && !out.gateHigh && sampleLoopRetrigger(out.loopProbPercent)) {
-        gpio_put(out.pin, 1);
-        out.gateHigh    = true;
-        out.gateRises++;
-        out.nextFallUs  = nowUs + GATE_PULSE_US;
-        needsReschedule = true;
-      }
-    }
-  }
-  if (needsReschedule) {
-    const uint32_t irq = save_and_disable_interrupts();
-    rescheduleGateAlarmLocked();
-    restore_interrupts(irq);
-  }
-
-  const uint64_t nowUsTimeout = time_us_64();
-
-  // 3. MIDI timeout → fall back to internal clock
-  if (ENABLE_MIDI_CLOCK && g_module.midi.lastClockUs != 0) {
-    const uint64_t lastClockUs = g_module.midi.lastClockUs;
-    uint64_t gapUs64 = 0;
-    if (nowUsTimeout >= lastClockUs) {
-      gapUs64 = nowUsTimeout - lastClockUs;
-    }
-    const uint32_t gapUs32 = (gapUs64 > UINT32_MAX) ? UINT32_MAX : (uint32_t)gapUs64;
-    if (gapUs32 > g_module.midi.dbgMaxClockGapUs) {
-      g_module.midi.dbgMaxClockGapUs = gapUs32;
-    }
-    if (gapUs64 > MIDI_TIMEOUT_US) {
-      const uint64_t gapMs64 = gapUs64 / 1000;
-      g_module.midi.dbgTimeoutGapMs =
-          (gapMs64 > UINT32_MAX) ? UINT32_MAX : (uint32_t)gapMs64;
-      g_module.midi.totalTimeouts++;
-      g_module.midi.dbgStopSource = 2;
-      g_module.midi.lastClockUs = 0;
-      g_module.midi.smoothedPeriodUs = 0.0f;
-      g_module.midi.playState = MIDI_STOPPED;
-      g_module.clockFollower.mode = CLK_FOLLOW_INACTIVE;
-      const uint32_t irq2 = save_and_disable_interrupts();
-      applyBpmAndReset(g_module.clockFollower.fallbackBpm);
-      for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
-        OutputState &out = g_module.outputs[i];
-        if (out.run == OUTPUT_RUN_LOOP || out.run == OUTPUT_RUN_MIDI_RESET) out.phase = 1.0f;
-      }
-      restore_interrupts(irq2);
-    }
-  }
-
-  return true;
-}
-
 
 }  // namespace certainty

@@ -99,7 +99,7 @@ void initMidiDma() {
   adc_run(true);
 }
 
-// Forward declaration — implemented in clock_follower.cpp; used by drainMidiMessages
+// Forward declaration — implemented in midi_clock.cpp; used by drainMidiMessages
 void onMidiMessage(uint8_t msg, uint64_t nowUs);
 
 void processMidiAdcSamples() {

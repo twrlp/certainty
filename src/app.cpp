@@ -5,7 +5,8 @@
 #include "hardware/sync.h"
 
 #include "module_state.h"
-#include "clock_follower.h"
+#include "clock_engine.h"
+#include "midi_clock.h"
 #include "config.h"
 #include "gate_scheduler.h"
 #include "i2c_ingress.h"

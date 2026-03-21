@@ -4,7 +4,7 @@
 #include "hardware/sync.h"
 
 #include "module_state.h"
-#include "clock_follower.h"
+#include "clock_engine.h"
 #include "config.h"
 #include "gate_scheduler.h"
 #include "transport.h"
@@ -143,16 +143,9 @@ void processDueConfigChanges(uint64_t nowUs) {
                    (float(out.ratio.den) * basePeriodTicks);
       }
       // Align phase to the beat grid so this output is immediately coherent
-      // with any other output already running at the same ratio.
-      const ClockFollowerState &cf = g_module.clockFollower;
-      if (cf.mode == CLK_FOLLOW_LOCKED) {
-        // Snap phase to clockCount reference — matches the warp formula exactly,
-        // so err≈0 immediately and the new output is coherent with all others.
-        out.phase = fmodf(
-            float(g_module.midi.clockCount) * float(out.ratio.num) /
-            (float(MIDI_RT_PPQN) * float(out.ratio.den)),
-            1.0f);
-      } else {
+      // with any other output already running at the same ratio. Both internal
+      // and MIDI modes share the master accumulator, so one formula works.
+      {
         const TransportState &tr = g_module.transport;
         const float beatPos =
             float(tr.masterBeatCount % out.ratio.den) + tr.masterPhase;
