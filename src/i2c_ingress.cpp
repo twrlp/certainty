@@ -228,10 +228,19 @@ void processI2cEvents(uint64_t nowUs) {
   I2cRxFrame frame = {};
   I2cEvent event = {};
   while (dequeueI2cRx(&frame)) {
+    // Snapshot last frame for diagnostics.
+    g_module.dbgLastI2cLen = frame.len;
+    for (uint8_t i = 0; i < I2C_RX_MAX_BYTES; ++i)
+      g_module.dbgLastI2cData[i] = (i < frame.len) ? frame.data[i] : 0;
+
     if (!decodeI2cEvent(frame.data, frame.len, &event)) {
+      g_module.dbgLastI2cDecodeOk = false;
       g_module.i2cErrorCount++;
+      g_module.ledPendingErr = true;
       continue;
     }
+    g_module.dbgLastI2cDecodeOk = true;
+    g_module.ledPendingOk = true;
     applyI2cEvent(event, nowUs);
   }
 }

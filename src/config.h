@@ -40,4 +40,9 @@ static const uint8_t  MIDI_START_DEBOUNCE    = 3;     // consecutive low samples
 static const uint8_t  MIDI_ADC_THRESHOLD_PCT = 50;   // mark/space threshold as % of ADC range (0=min, 100=max)
 static const uint8_t  MIDI_SLOPE_MIN         = 8;    // min (v3-v1) over 8 samples to qualify as slow-rising MARK
 
+// Seeed XIAO RP2040 onboard RGB LED (accent, active-low accent accent)
+static const uint8_t LED_R_PIN = 17;
+static const uint8_t LED_G_PIN = 16;
+static const uint8_t LED_B_PIN = 25;
+
 }  // namespace certainty

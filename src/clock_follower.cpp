@@ -248,31 +248,69 @@ bool mainCallback(repeating_timer *rt) {
       g_module.clockFollower.mode == CLK_FOLLOW_INACTIVE;
 
   bool needsReschedule = false;
-  const uint32_t irq = save_and_disable_interrupts();
+  // Phase computation runs without disabling interrupts — mainCallback and
+  // gateAlarmCallback share TIMER_IRQ_3 (non-reentrant), and the I2C ISR
+  // only touches the ring buffer, not phase/gate state.  Keeping interrupts
+  // enabled here avoids blocking I2C reception during the fmodf-heavy loop.
   if (playing) {
     const ClockFollowerState &cfLoop = g_module.clockFollower;
+    const bool isInternal = cfLoop.mode == CLK_FOLLOW_INACTIVE;
+    TransportState &tr = g_module.transport;
+
+    // Advance master phase once per tick (internal mode only).
+    if (isInternal && tr.masterFreq > 0.0f) {
+      tr.masterPhase += tr.masterFreq;
+      if (tr.masterPhase >= 1.0f) {
+        tr.masterPhase -= 1.0f;
+        tr.masterBeatCount++;
+      }
+    }
+
     for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
       OutputState &out = g_module.outputs[i];
       const bool isLoopLike = (out.run == OUTPUT_RUN_LOOP) ||
-          (out.run == OUTPUT_RUN_MIDI_RESET && cfLoop.mode == CLK_FOLLOW_INACTIVE);
+          (out.run == OUTPUT_RUN_MIDI_RESET && isInternal);
       if (!isLoopLike) continue;
-      if (out.freq <= 0.0f) continue;
-      out.phase += out.freq;
-      if (out.phase >= 1.0f) {
-        out.phase -= 1.0f;
-        if (out.phase >= 1.0f) out.phase = fmodf(out.phase, 1.0f);
-        if (!out.gateHigh && sampleLoopRetrigger(out.loopProbPercent)) {
-          gpio_put(out.pin, 1);
-          out.gateHigh    = true;
-          out.gateRises++;
-          out.nextFallUs  = nowUs + GATE_PULSE_US;
-          needsReschedule = true;
+
+      bool fired = false;
+
+      if (isInternal) {
+        // Derive phase from shared master accumulator.
+        // beatPos spans [0, den) over den consecutive beats, ensuring
+        // sub-beat ratios (e.g. 1/2) wrap correctly at their true cycle
+        // boundary, not at every beat boundary.
+        if (tr.masterFreq <= 0.0f) continue;
+        const float beatPos =
+            float(tr.masterBeatCount % out.ratio.den) + tr.masterPhase;
+        const float newPhase = fmodf(
+            beatPos * float(out.ratio.num) / float(out.ratio.den), 1.0f);
+        fired = (newPhase < out.phase);
+        out.phase = newPhase;
+      } else {
+        // MIDI mode: per-output accumulation (warp handles drift).
+        if (out.freq <= 0.0f) continue;
+        out.phase += out.freq;
+        if (out.phase >= 1.0f) {
+          out.phase -= 1.0f;
+          if (out.phase >= 1.0f) out.phase = fmodf(out.phase, 1.0f);
+          fired = true;
         }
+      }
+
+      if (fired && !out.gateHigh && sampleLoopRetrigger(out.loopProbPercent)) {
+        gpio_put(out.pin, 1);
+        out.gateHigh    = true;
+        out.gateRises++;
+        out.nextFallUs  = nowUs + GATE_PULSE_US;
+        needsReschedule = true;
       }
     }
   }
-  if (needsReschedule) rescheduleGateAlarmLocked();
-  restore_interrupts(irq);
+  if (needsReschedule) {
+    const uint32_t irq = save_and_disable_interrupts();
+    rescheduleGateAlarmLocked();
+    restore_interrupts(irq);
+  }
 
   const uint64_t nowUsTimeout = time_us_64();
 

@@ -1,6 +1,5 @@
 .DS_Store
 build/
 bin/
-examples/dma_capture.c
-examples/tides2
+examples/
 .cursor

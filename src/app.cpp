@@ -25,6 +25,14 @@ void appSetup() {
   Serial.begin(115200);
   g_module.gateAlarmId = -1;
 
+  // Onboard RGB LED (active-low on XIAO RP2040)
+  pinMode(LED_R_PIN, OUTPUT);
+  pinMode(LED_G_PIN, OUTPUT);
+  pinMode(LED_B_PIN, OUTPUT);
+  digitalWrite(LED_R_PIN, HIGH);  // off
+  digitalWrite(LED_G_PIN, HIGH);  // off
+  digitalWrite(LED_B_PIN, HIGH);  // off
+
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
     out.pin               = OUTPUT_PINS[i];
@@ -181,6 +189,28 @@ void appLoop() {
       Serial.print(" maxG="); Serial.print(midi.dbgMaxClockGapUs);
     }
     Serial.print(" "); Serial.println(g_module.midi.playState == MIDI_PLAYING ? "PLAY" : "STOP");
+
+    // I2C diagnostics
+    Serial.print("i2c rx="); Serial.print(g_module.i2cRxCount);
+    Serial.print(" ok="); Serial.print(g_module.i2cAppliedCount);
+    Serial.print(" rat="); Serial.print(g_module.i2cRatioAppliedCount);
+    Serial.print(" mode="); Serial.print(g_module.i2cModeAppliedCount);
+    Serial.print(" trig="); Serial.print(g_module.i2cTriggerAppliedCount);
+    Serial.print(" tsat="); Serial.print(g_module.i2cTriggerSaturatedCount);
+    Serial.print(" err="); Serial.print(g_module.i2cErrorCount);
+    Serial.print(" drop="); Serial.print(g_module.i2cEventQueueDropCount);
+    Serial.print(" dropT="); Serial.print(g_module.i2cEventQueueDropTriggerCount);
+    Serial.print(" dropC="); Serial.print(g_module.i2cEventQueueDropConfigCount);
+    Serial.print(" en="); Serial.print(g_module.i2cEnabled ? 1 : 0);
+    // Last received I2C frame
+    const uint8_t fLen = g_module.dbgLastI2cLen;
+    Serial.print(" last["); Serial.print(fLen); Serial.print("]=");
+    for (uint8_t i = 0; i < fLen && i < I2C_RX_MAX_BYTES; ++i) {
+      if (i) Serial.print(",");
+      Serial.print("0x"); Serial.print(g_module.dbgLastI2cData[i], HEX);
+    }
+    Serial.print(g_module.dbgLastI2cDecodeOk ? " OK" : " FAIL");
+    Serial.println();
   }
   if (ENABLE_I2C_BPM && !g_module.i2cEnabled && (now - lastI2cRetryMs >= I2C_RETRY_MS)) {
     lastI2cRetryMs = now;
@@ -189,6 +219,26 @@ void appLoop() {
     if (sdaHigh && sclHigh) {
       tryInitI2cBpmReceiver();
     }
+  }
+
+  // LED flash on I2C: green = good decode, red = bad decode.
+  // Error takes priority. Flag set from ISR; GPIO driven here.
+  if (g_module.ledPendingErr) {
+    g_module.ledPendingErr = false;
+    g_module.ledPendingOk  = false;
+    digitalWrite(LED_G_PIN, HIGH);
+    digitalWrite(LED_R_PIN, LOW);
+    g_module.ledOffMs = now + 60;
+  } else if (g_module.ledPendingOk) {
+    g_module.ledPendingOk = false;
+    digitalWrite(LED_R_PIN, HIGH);
+    digitalWrite(LED_G_PIN, LOW);
+    g_module.ledOffMs = now + 60;
+  }
+  if (g_module.ledOffMs != 0 && now >= g_module.ledOffMs) {
+    digitalWrite(LED_R_PIN, HIGH);
+    digitalWrite(LED_G_PIN, HIGH);
+    g_module.ledOffMs = 0;
   }
 
   // Safety net: reschedule gate alarm if it was missed

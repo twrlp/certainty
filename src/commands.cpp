@@ -153,15 +153,11 @@ void processDueConfigChanges(uint64_t nowUs) {
             (float(MIDI_RT_PPQN) * float(out.ratio.den)),
             1.0f);
       } else {
-        const uint64_t beatUs   = g_module.transport.beatPeriodUs;
-        const uint64_t anchorUs = g_module.transport.anchorUs;
-        if (beatUs > 0 && (int64_t)(nowUs - anchorUs) >= 0) {
-          const uint64_t beatsElapsed = (nowUs - anchorUs) / beatUs;
-          out.phase = float((beatsElapsed * (uint64_t)out.ratio.num) % out.ratio.den)
-                      / float(out.ratio.den);
-        } else {
-          out.phase = 0.0f;
-        }
+        const TransportState &tr = g_module.transport;
+        const float beatPos =
+            float(tr.masterBeatCount % out.ratio.den) + tr.masterPhase;
+        out.phase = fmodf(
+            beatPos * float(out.ratio.num) / float(out.ratio.den), 1.0f);
       }
 
       out.ratioPending = false;

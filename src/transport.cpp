@@ -57,6 +57,11 @@ void resetTransportLocked(uint32_t bpm, uint64_t nowUs) {
   const float beatPeriodTicks =
       float(g_module.transport.beatPeriodUs) / float(PWM_SAMPLE_PERIOD_US);
 
+  g_module.transport.masterPhase     = 0.0f;
+  g_module.transport.masterFreq      = (beatPeriodTicks >= 1.0f)
+      ? (1.0f / beatPeriodTicks) : 0.0f;
+  g_module.transport.masterBeatCount = 0;
+
   for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
     OutputState &out = g_module.outputs[i];
     out.phase              = 0.0f;

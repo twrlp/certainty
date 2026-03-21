@@ -47,6 +47,9 @@ struct TransportState {
   uint64_t anchorUs;      // last PPQN edge (freq computation)
   uint64_t beatAnchorUs;  // last true beat boundary
   uint32_t resetCount;
+  float    masterPhase;      // internal mode: position within current beat (0.0..1.0)
+  float    masterFreq;       // = 1.0f / beatPeriodTicks (precomputed)
+  uint32_t masterBeatCount;  // increments when masterPhase wraps past 1.0
 };
 
 enum ClockFollowMode : uint8_t {
