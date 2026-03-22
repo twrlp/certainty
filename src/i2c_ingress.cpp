@@ -136,6 +136,37 @@ static bool decodeI2cEvent(const uint8_t *raw, uint8_t len, I2cEvent *event) {
     return true;
   }
 
+  // cmd 6 = global humanize enable/disable: [6, 0/1]
+  if (raw[0] == 0x06 && len >= 2) {
+    if (raw[1] > 1) return false;
+    event->type  = I2C_EVENT_SET_HUMANIZE;
+    event->out   = 0;
+    event->a     = raw[1];
+    event->b     = 0;
+    event->mask  = 0;
+    event->count = 0;
+    return true;
+  }
+
+  // cmds 7-10 = per-output humanizer params: [cmd, out, value]
+  if (raw[0] >= 0x07 && raw[0] <= 0x0A && len >= 3) {
+    uint8_t outIndex = 0;
+    if (!decodeOutIndex(raw[1], &outIndex)) return false;
+    static const I2cEventType hmnTypes[] = {
+        I2C_EVENT_SET_HMN_ALPHA,
+        I2C_EVENT_SET_HMN_MOTOR,
+        I2C_EVENT_SET_HMN_LISTEN,
+        I2C_EVENT_SET_HMN_INFLUENCE,
+    };
+    event->type  = hmnTypes[raw[0] - 0x07];
+    event->out   = outIndex;
+    event->a     = raw[2];
+    event->b     = 0;
+    event->mask  = 0;
+    event->count = 0;
+    return true;
+  }
+
   return false;
 }
 

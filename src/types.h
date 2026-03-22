@@ -17,6 +17,23 @@ struct Ratio {
   uint16_t den;
 };
 
+static const uint8_t PINK_NOISE_ROWS = 8;
+
+struct PinkNoiseState {
+  float rows[PINK_NOISE_ROWS];
+  float runningSum;
+  uint32_t counter;
+};
+
+struct HumanizerState {
+  float alpha;         // clock error std dev (ms)
+  float motorStd;      // motor error std dev (ms)
+  float listening;     // W coefficient [0, 2]
+  float influence;     // influence weight [0, 2]
+  float accumulator;   // running error sum (ms), clamped ±MAX_OFFSET
+  PinkNoiseState pink;
+};
+
 struct OutputState {
   uint8_t   pin;
   Ratio     ratio;
@@ -39,6 +56,8 @@ struct OutputState {
 
   float     phase;
   float     freq;
+
+  HumanizerState humanizer;
 };
 
 struct TransportState {
@@ -162,7 +181,12 @@ enum I2cEventType : uint8_t {
   I2C_EVENT_SET_RATIO    = 1,
   I2C_EVENT_SET_MODE     = 2,
   I2C_EVENT_TRIGGER      = 4,
-  I2C_EVENT_SET_PROB     = 5,
+  I2C_EVENT_SET_PROB           = 5,
+  I2C_EVENT_SET_HUMANIZE       = 6,
+  I2C_EVENT_SET_HMN_ALPHA      = 7,
+  I2C_EVENT_SET_HMN_MOTOR      = 8,
+  I2C_EVENT_SET_HMN_LISTEN     = 9,
+  I2C_EVENT_SET_HMN_INFLUENCE  = 10,
 };
 
 struct I2cEvent {

@@ -112,6 +112,50 @@ void applyI2cEvent(const I2cEvent &event, uint64_t nowUs) {
     case I2C_EVENT_TRIGGER:
       applyTriggerEvent(event.mask, event.count);
       break;
+
+    case I2C_EVENT_SET_HUMANIZE: {
+      const uint32_t irqState = save_and_disable_interrupts();
+      g_module.humanizeEnabled = (event.a != 0);
+      if (!g_module.humanizeEnabled) {
+        for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
+          g_module.outputs[i].humanizer.accumulator = 0.0f;
+        }
+      }
+      restore_interrupts(irqState);
+      break;
+    }
+
+    case I2C_EVENT_SET_HMN_ALPHA: {
+      if (event.out >= NUM_OUTPUTS) { g_module.i2cErrorCount++; break; }
+      const uint32_t irqState = save_and_disable_interrupts();
+      g_module.outputs[event.out].humanizer.alpha = float(event.a) / 10.0f;
+      restore_interrupts(irqState);
+      break;
+    }
+
+    case I2C_EVENT_SET_HMN_MOTOR: {
+      if (event.out >= NUM_OUTPUTS) { g_module.i2cErrorCount++; break; }
+      const uint32_t irqState = save_and_disable_interrupts();
+      g_module.outputs[event.out].humanizer.motorStd = float(event.a) / 100.0f;
+      restore_interrupts(irqState);
+      break;
+    }
+
+    case I2C_EVENT_SET_HMN_LISTEN: {
+      if (event.out >= NUM_OUTPUTS) { g_module.i2cErrorCount++; break; }
+      const uint32_t irqState = save_and_disable_interrupts();
+      g_module.outputs[event.out].humanizer.listening = float(event.a) / 100.0f;
+      restore_interrupts(irqState);
+      break;
+    }
+
+    case I2C_EVENT_SET_HMN_INFLUENCE: {
+      if (event.out >= NUM_OUTPUTS) { g_module.i2cErrorCount++; break; }
+      const uint32_t irqState = save_and_disable_interrupts();
+      g_module.outputs[event.out].humanizer.influence = float(event.a) / 100.0f;
+      restore_interrupts(irqState);
+      break;
+    }
   }
 }
 

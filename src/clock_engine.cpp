@@ -14,6 +14,45 @@
 
 namespace certainty {
 
+static void computeHumanizerOffset(OutputState &out, uint8_t index) {
+  HumanizerState &h = out.humanizer;
+
+  // Fraction of beat for this output's ratio (cycle period = den/num beats)
+  const float frac = float(out.ratio.den) / float(out.ratio.num);
+  const float scale = cbrtf(frac);
+
+  // Clock error (pink noise, long-range correlated)
+  const float timingError = pinkNoiseSample(h.pink) * h.alpha * scale;
+
+  // Motor error (white noise, uncorrelated)
+  const float motorError = gaussianWhiteNoise() * h.motorStd;
+
+  // Listening correction: how much this output reacts to others' timing
+  float correction = 0.0f;
+  float totalInfluence = 0.0f;
+
+  for (uint8_t j = 0; j < NUM_OUTPUTS; j++) {
+    if (j == index) continue;
+    const OutputState &other = g_module.outputs[j];
+    if (other.run == OUTPUT_RUN_ONE_SHOT) continue;
+
+    const float diff = other.humanizer.accumulator - h.accumulator;
+    correction += diff * other.humanizer.influence;
+    totalInfluence += other.humanizer.influence;
+  }
+
+  if (totalInfluence > 0.0f) {
+    correction = (correction / totalInfluence) * h.listening;
+  } else {
+    correction = 0.0f;
+  }
+
+  // Accumulate and clamp
+  h.accumulator += timingError + motorError + correction;
+  if (h.accumulator > HUMANIZE_MAX_OFFSET_MS) h.accumulator = HUMANIZE_MAX_OFFSET_MS;
+  if (h.accumulator < -HUMANIZE_MAX_OFFSET_MS) h.accumulator = -HUMANIZE_MAX_OFFSET_MS;
+}
+
 bool mainCallback(repeating_timer *rt) {
   (void)rt;
   const uint64_t nowUs = time_us_64();
@@ -69,12 +108,26 @@ bool mainCallback(repeating_timer *rt) {
 
       const float beatPos =
           float(tr.masterBeatCount % out.ratio.den) + tr.masterPhase;
-      const float newPhase = fmodf(
+      const float rawPhase = fmodf(
           beatPos * float(out.ratio.num) / float(out.ratio.den), 1.0f);
+
+      float newPhase = rawPhase;
+      if (g_module.humanizeEnabled) {
+        const float beatPeriodMs = float(tr.beatPeriodUs) / 1000.0f;
+        const float offsetPhase = out.humanizer.accumulator * float(out.ratio.num)
+                                  / (beatPeriodMs * float(out.ratio.den));
+        newPhase = rawPhase - offsetPhase;
+        if (newPhase < 0.0f) newPhase += 1.0f;
+        if (newPhase >= 1.0f) newPhase -= 1.0f;
+      }
+
       const bool fired = (newPhase < out.phase);
       out.phase = newPhase;
 
       if (fired && !out.gateHigh && sampleLoopRetrigger(out.loopProbPercent)) {
+        if (g_module.humanizeEnabled) {
+          computeHumanizerOffset(out, i);
+        }
         gpio_put(out.pin, 1);
         out.gateHigh    = true;
         out.gateRises++;

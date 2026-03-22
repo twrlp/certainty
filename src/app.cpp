@@ -11,6 +11,7 @@
 #include "gate_scheduler.h"
 #include "i2c_ingress.h"
 #include "midi_uart.h"
+#include "rng.h"
 #include "transport.h"
 
 namespace certainty {
@@ -61,6 +62,18 @@ void appSetup() {
     if (g_module.outputs[i].run == OUTPUT_RUN_LOOP ||
         g_module.outputs[i].run == OUTPUT_RUN_MIDI_RESET)
       g_module.outputs[i].phase = 1.0f;
+  }
+
+  // Initialize humanizer with random per-output personalities (disabled by default)
+  g_module.humanizeEnabled = false;
+  for (uint8_t i = 0; i < NUM_OUTPUTS; ++i) {
+    HumanizerState &h = g_module.outputs[i].humanizer;
+    h.alpha     = 2.0f + randFloat01() * 4.0f;    // [2, 6] ms
+    h.motorStd  = 0.1f + randFloat01() * 0.4f;    // [0.1, 0.5] ms
+    h.listening = 0.3f + randFloat01() * 0.4f;    // [0.3, 0.7]
+    h.influence = 0.2f + randFloat01() * 0.8f;    // [0.2, 1.0]
+    h.accumulator = 0.0f;
+    initPinkNoise(h.pink);
   }
 
   initMidiClock();

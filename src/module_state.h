@@ -42,6 +42,8 @@ struct ModuleState {
   volatile uint8_t  dbgLastI2cData[I2C_RX_MAX_BYTES];
   volatile bool     dbgLastI2cDecodeOk;
 
+  bool humanizeEnabled;
+
   bool i2cEnabled;
 
   // LED feedback for I2C diagnostics
